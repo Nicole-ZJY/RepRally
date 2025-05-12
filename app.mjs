@@ -499,13 +499,32 @@ app.get('/api/cities-gmv/:state', async (req, res) => {
 app.get('/api/state-stores/:state', async (req, res) => {
   try {
     let { state } = req.params;
+
+    console.log(`API Request: /api/state-stores/${state}`);
+    
+    // Log Snowflake connection status
+    console.log(`Snowflake connection available: ${!!snowflakeConnection}`);
     
     if (!state) {
       return res.status(400).json({ error: 'State parameter is required' });
     }
-    
-    // Convert full state name to two-letter code if needed
+
+      // Get both state code and full name to try multiple formats
     const stateCode = getStateCodeFromName(state);
+    const stateName = getStateNameFromCode(state);
+
+        // Create an array of state formats to try
+    const stateFormats = [
+      state,                   // Original format
+      stateCode,               // State code
+      stateName,               // State name
+      state.toUpperCase(),     // Uppercase
+      state.toLowerCase()      // Lowercase
+    ].filter(Boolean);  // Remove null/undefined values
+
+    console.log(`Trying state formats: ${stateFormats.join(', ')}`);
+        // Build a query that will try all state formats
+
     if (stateCode) {
       console.log(`Converted state name "${state}" to state code "${stateCode}"`);
       state = stateCode; // Use the state code for the database query
@@ -526,10 +545,7 @@ app.get('/api/state-stores/:state', async (req, res) => {
       console.error('No active Snowflake connection');
       return res.status(503).json({ error: 'Database connection unavailable' });
     }
-    
-    // Log the request
-    console.log(`Fetching stores for state: ${state}`);
-    const placeholders = stateFormatsToTry.map((_ , i) => `?`).join(' OR s.STORE_STATE = ');
+  
 
     // Enhanced query to join STORES with ORDERS to get more accurate metrics
     const query = `
@@ -577,10 +593,14 @@ app.get('/api/state-stores/:state', async (req, res) => {
     `;
 
     console.log(`[State Stores API] Executing query with binds:`, stateFormatsToTry);
-    
+        // Log the request
+    console.log(`Fetching stores for state: ${state}`);
+    const placeholders = stateFormatsToTry.map((_ , i) => `?`).join(' OR s.STORE_STATE = ');
+    const modifiedQuery = query.replace('s.STORE_STATE = ?', `(s.STORE_STATE = ${placeholders})`);
+
     snowflakeConnection.execute({
-      sqlText: query,
-      binds: [state],
+      sqlText: modifiedQuery,
+      binds: stateFormats,
       complete: function(err, stmt, rows) {
         if (err) {
           console.error('Failed to execute query:', err);
@@ -626,6 +646,7 @@ app.get('/api/state-stores/:state', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching state stores:', error);
+    console.error('Stack trace:', error.stack);
     res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
   }
 });
