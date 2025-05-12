@@ -1,0 +1,20 @@
+{
+  "users": [
+    {
+      "id": 1,
+      "username": "admin",
+      "email": "admin@example.com",
+      "password": "$2b$10$SH93HyFkzYrdOfUi4w9f7Ow42KrhQcFeWBfUqKifOgjsn.UudbvqC",
+      "role": "admin",
+      "createdAt": "2025-05-09T19:14:29.760Z"
+    },
+    {
+      "id": 2,
+      "username": "Nicole",
+      "email": "nicole@reprally.com",
+      "password": "$2b$10$CVddNvURjOFBCtYErgIeVefSbrZsqrzkqEjn8RhTL86tMVguJIqky",
+      "role": "user",
+      "createdAt": "2025-05-09T19:15:07.251Z"
+    }
+  ]
+}
