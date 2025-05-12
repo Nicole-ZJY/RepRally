@@ -291,7 +291,14 @@ app.get('/api/states-gmv', async (req, res) => {
           return res.status(500).json({ error: 'Database query failed' });
         }
         
-        return res.json(rows);
+        // Process the data to ensure consistent property names
+        const processedData = rows.map(row => ({
+          state: row.STATE || row.state,
+          store_count: Number(row.STORE_COUNT || row.store_count || 0),
+          total_gmv: Number(row.TOTAL_GMV || row.total_gmv || 0)
+        }));
+        
+        return res.json(processedData);
       }
     });
   } catch (error) {
@@ -300,25 +307,28 @@ app.get('/api/states-gmv', async (req, res) => {
   }
 });
 
+
 app.get('/api/cities-gmv/:state', async (req, res) => {
   try {
     const { state } = req.params;
     
     const query = `
       SELECT 
-        STORE_CITY as city,
+        COALESCE(STORE_DMA_NAME, STORE_CITY) as city,
         COUNT(*) as store_count,
         SUM(GMV_LAST_MONTH) as total_gmv,
+        AVG(GMV_LAST_MONTH) as avg_gmv_per_store,
+        SUM(STORE_LIFETIME_GMV) as total_lifetime_gmv,
+        SUM(STORE_LIFETIME_ORDERS) as total_lifetime_orders,
         AVG(LATITUDE) as latitude,
         AVG(LONGITUDE) as longitude
       FROM 
         STORES 
       WHERE 
         STORE_STATE = ?
-        AND STORE_CITY IS NOT NULL
-        AND GMV_LAST_MONTH > 0
+        AND COALESCE(STORE_DMA_NAME, STORE_CITY) IS NOT NULL
       GROUP BY 
-        STORE_CITY
+        COALESCE(STORE_DMA_NAME, STORE_CITY)
       ORDER BY 
         total_gmv DESC
     `;
@@ -332,7 +342,21 @@ app.get('/api/cities-gmv/:state', async (req, res) => {
           return res.status(500).json({ error: 'Database query failed' });
         }
         
-        return res.json(rows);
+        // Process the data to ensure consistent property names and filter out entries with no coordinates
+        const processedData = (rows || [])
+          .map(row => ({
+            city: row.CITY || row.city || '',
+            store_count: Number(row.STORE_COUNT || row.store_count || 0),
+            total_gmv: Number(row.TOTAL_GMV || row.total_gmv || 0),
+            avg_gmv_per_store: Number(row.AVG_GMV_PER_STORE || row.avg_gmv_per_store || 0),
+            total_lifetime_gmv: Number(row.TOTAL_LIFETIME_GMV || row.total_lifetime_gmv || 0),
+            total_lifetime_orders: Number(row.TOTAL_LIFETIME_ORDERS || row.total_lifetime_orders || 0),
+            latitude: Number(row.LATITUDE || row.latitude || 0),
+            longitude: Number(row.LONGITUDE || row.longitude || 0)
+          }))
+          .filter(item => item.latitude && item.longitude); // Filter out entries with no coordinates
+        
+        return res.json(processedData);
       }
     });
   } catch (error) {
@@ -341,92 +365,426 @@ app.get('/api/cities-gmv/:state', async (req, res) => {
   }
 });
 
+app.get('/api/state-stores/:state', async (req, res) => {
+  try {
+    const { state } = req.params;
+    
+    if (!state) {
+      return res.status(400).json({ error: 'State parameter is required' });
+    }
+    
+    const query = `
+      SELECT 
+        s.STORE_ID,
+        s.SELLER_ID,
+        s.LATEST_SELLER_ID,
+        s.SELLER_FIRST_NAME,
+        s.SELLER_LAST_NAME,
+        s.STORE_LOCATION_NAME,
+        s.STORE_ADDRESS,
+        s.STORE_CITY,
+        s.STORE_STATE,
+        s.STORE_ZIP_CODE,
+        s.LATITUDE,
+        s.LONGITUDE,
+        s.STORE_LIFETIME_GMV,
+        s.STORE_LIFETIME_ORDERS,
+        s.GMV_LAST_MONTH,
+        s.GMV_CURRENT_MONTH,
+        s.ORDERS_LAST_MONTH,
+        -- Get additional metrics from ORDERS table
+        SUM(CASE WHEN MONTH(o.ORDER_CREATED_AT) = MONTH(CURRENT_DATE()) 
+                 AND YEAR(o.ORDER_CREATED_AT) = YEAR(CURRENT_DATE()) 
+            THEN o.ORDER_GMV ELSE 0 END) as ORDERS_MTD_GMV,
+        COUNT(CASE WHEN MONTH(o.ORDER_CREATED_AT) = MONTH(CURRENT_DATE()) 
+                   AND YEAR(o.ORDER_CREATED_AT) = YEAR(CURRENT_DATE()) 
+            THEN o.ORDER_ID ELSE NULL END) as ORDERS_MTD_COUNT
+      FROM 
+        STORES s
+      LEFT JOIN
+        ORDERS o ON s.STORE_ID = o.STORE_ID
+      WHERE 
+        s.STORE_STATE = ?
+        AND s.LATITUDE IS NOT NULL
+        AND s.LONGITUDE IS NOT NULL
+      GROUP BY
+        s.STORE_ID, s.SELLER_ID, s.LATEST_SELLER_ID, s.SELLER_FIRST_NAME, s.SELLER_LAST_NAME,
+        s.STORE_LOCATION_NAME, s.STORE_ADDRESS, s.STORE_CITY, s.STORE_STATE, s.STORE_ZIP_CODE,
+        s.LATITUDE, s.LONGITUDE, s.STORE_LIFETIME_GMV, s.STORE_LIFETIME_ORDERS,
+        s.GMV_LAST_MONTH, s.GMV_CURRENT_MONTH, s.ORDERS_LAST_MONTH
+      ORDER BY 
+        s.GMV_LAST_MONTH DESC
+      LIMIT 200
+    `;
+    
+    snowflakeConnection.execute({
+      sqlText: query,
+      binds: [state],
+      complete: function(err, stmt, rows) {
+        if (err) {
+          console.error('Failed to execute query:', err);
+          return res.status(500).json({ error: 'Database query failed: ' + err.message });
+        }
+        
+        if (!rows || rows.length === 0) {
+          console.warn(`No stores found for state ${state}`);
+          return res.status(404).json({ error: 'No stores found for this state' });
+        }
+        
+        return res.json(rows);
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching state stores:', error);
+    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
+  }
+});
+
+
+// API route to fetch sellers for a specific state (for state-level map)
+app.get('/api/state-sellers/:state', async (req, res) => {
+  try {
+    const { state } = req.params;
+    
+    if (!state) {
+      return res.status(400).json({ error: 'State parameter is required' });
+    }
+    
+    const query = `
+      SELECT 
+        s.SELLER_ID,
+        s.SELLER_FIRST_NAME,
+        s.SELLER_LAST_NAME,
+        s.SELLER_FULL_NAME,
+        s.SELLER_ADDRESS,
+        s.SELLER_CITY,
+        s.SELLER_STATE,
+        s.SELLER_ZIP_CODE,
+        s.LATITUDE,
+        s.LONGITUDE,
+        s.SELLER_TOTAL_GMV,
+        s.GMV_LAST_MONTH,
+        s.GMV_MTD,
+        s.STORES_LAST_MONTH,
+        s.ORDERS_MTD,
+        -- Get additional metrics from ORDERS table
+        COUNT(DISTINCT o.STORE_ID) as ACTIVE_STORES_COUNT,
+        SUM(CASE WHEN MONTH(o.ORDER_CREATED_AT) = MONTH(CURRENT_DATE()) 
+                 AND YEAR(o.ORDER_CREATED_AT) = YEAR(CURRENT_DATE()) 
+            THEN o.ORDER_GMV ELSE 0 END) as ORDERS_MTD_GMV,
+        COUNT(CASE WHEN MONTH(o.ORDER_CREATED_AT) = MONTH(CURRENT_DATE()) 
+                   AND YEAR(o.ORDER_CREATED_AT) = YEAR(CURRENT_DATE()) 
+            THEN o.ORDER_ID ELSE NULL END) as ORDERS_MTD_COUNT
+      FROM 
+        SELLERS s
+      LEFT JOIN
+        ORDERS o ON s.SELLER_ID = o.SELLER_ID
+      WHERE 
+        s.SELLER_STATE = ?
+        AND s.LATITUDE IS NOT NULL
+        AND s.LONGITUDE IS NOT NULL
+      GROUP BY
+        s.SELLER_ID, s.SELLER_FIRST_NAME, s.SELLER_LAST_NAME, s.SELLER_FULL_NAME,
+        s.SELLER_ADDRESS, s.SELLER_CITY, s.SELLER_STATE, s.SELLER_ZIP_CODE,
+        s.LATITUDE, s.LONGITUDE, s.SELLER_TOTAL_GMV, s.GMV_LAST_MONTH,
+        s.GMV_MTD, s.STORES_LAST_MONTH, s.ORDERS_MTD
+      ORDER BY 
+        s.SELLER_TOTAL_GMV DESC
+      LIMIT 100
+    `;
+    
+    snowflakeConnection.execute({
+      sqlText: query,
+      binds: [state],
+      complete: function(err, stmt, rows) {
+        if (err) {
+          console.error('Failed to execute query:', err);
+          return res.status(500).json({ error: 'Database query failed: ' + err.message });
+        }
+        
+        if (!rows || rows.length === 0) {
+          console.warn(`No sellers found for state ${state}`);
+          return res.status(404).json({ error: 'No sellers found for this state' });
+        }
+        
+        return res.json(rows);
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching state sellers:', error);
+    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
+  }
+});
+
+// API route to fetch stores for a specific city (for city-level map)
 app.get('/api/stores/:city/:state', async (req, res) => {
   try {
     const { city, state } = req.params;
     
-    // For demo purposes, return mock store data
-    const storeCount = Math.floor(Math.random() * 20) + 5;
-    const stores = [];
-    
-    for (let i = 0; i < storeCount; i++) {
-      // Generate mock store data
-      const storeId = 1000 + i;
-      const latitude = 37.7749 + (Math.random() * 0.1 - 0.05);
-      const longitude = -122.4194 + (Math.random() * 0.1 - 0.05);
-      
-      stores.push({
-        STORE_ID: storeId,
-        STORE_LOCATION_NAME: `${city} Store #${i+1}`,
-        STORE_ADDRESS: `${1000 + Math.floor(Math.random() * 9000)} Main St`,
-        STORE_CITY: city,
-        STORE_STATE: state,
-        LATITUDE: latitude,
-        LONGITUDE: longitude,
-        GMV_LAST_MONTH: Math.floor(Math.random() * 100000) + 5000,
-        STORE_LIFETIME_GMV: Math.floor(Math.random() * 1000000) + 50000,
-        STORE_LIFETIME_ORDERS: Math.floor(Math.random() * 1000) + 50
-      });
+    if (!city || !state) {
+      return res.status(400).json({ error: 'City and state parameters are required' });
     }
     
-    res.json(stores);
+    const query = `
+      SELECT 
+        s.STORE_ID,
+        s.STORE_LOCATION_NAME,
+        s.STORE_ADDRESS,
+        s.STORE_CITY,
+        s.STORE_STATE,
+        s.STORE_ZIP_CODE,
+        s.LATITUDE,
+        s.LONGITUDE,
+        s.STORE_LIFETIME_GMV,
+        s.STORE_LIFETIME_ORDERS,
+        s.GMV_LAST_MONTH,
+        s.GMV_CURRENT_MONTH,
+        s.LATEST_SELLER_ID,
+        sel.SELLER_FULL_NAME,
+        COUNT(o.ORDER_ID) as total_orders,
+        MAX(o.ORDER_CREATED_AT) as last_order_date
+      FROM 
+        STORES s
+      LEFT JOIN
+        ORDERS o ON s.STORE_ID = o.STORE_ID
+      LEFT JOIN
+        SELLERS sel ON s.LATEST_SELLER_ID = sel.SELLER_ID
+      WHERE 
+        s.STORE_CITY = ?
+        AND s.STORE_STATE = ?
+        AND s.LATITUDE IS NOT NULL
+        AND s.LONGITUDE IS NOT NULL
+      GROUP BY
+        s.STORE_ID, s.STORE_LOCATION_NAME, s.STORE_ADDRESS, s.STORE_CITY, 
+        s.STORE_STATE, s.STORE_ZIP_CODE, s.LATITUDE, s.LONGITUDE, 
+        s.STORE_LIFETIME_GMV, s.STORE_LIFETIME_ORDERS, s.GMV_LAST_MONTH, 
+        s.GMV_CURRENT_MONTH, s.LATEST_SELLER_ID, sel.SELLER_FULL_NAME
+      ORDER BY 
+        s.GMV_LAST_MONTH DESC
+    `;
+    
+    snowflakeConnection.execute({
+      sqlText: query,
+      binds: [city, state],
+      complete: function(err, stmt, rows) {
+        if (err) {
+          console.error('Failed to execute query:', err);
+          return res.status(500).json({ error: 'Database query failed: ' + err.message });
+        }
+        
+        if (!rows || rows.length === 0) {
+          console.warn(`No stores found for city ${city}, state ${state}`);
+          return res.status(404).json({ error: 'No stores found for this city' });
+        }
+        
+        return res.json(rows);
+      }
+    });
   } catch (error) {
-    console.error('Error fetching store data:', error);
-    res.status(500).json({ error: 'Failed to fetch data' });
+    console.error('Error fetching city stores:', error);
+    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
   }
 });
 
+// API route to fetch network data for a specific city (for network visualization)
 app.get('/api/network/:city/:state', async (req, res) => {
   try {
     const { city, state } = req.params;
     
-    // For demo purposes, return mock network data
-    const storeCount = Math.floor(Math.random() * 10) + 3;
-    const sellerCount = Math.floor(Math.random() * 15) + 5;
-    const networkData = [];
-    
-    // Create stores
-    const stores = [];
-    for (let i = 0; i < storeCount; i++) {
-      const storeId = 1000 + i;
-      const storeLat = 37.7749 + (Math.random() * 0.1 - 0.05);
-      const storeLng = -122.4194 + (Math.random() * 0.1 - 0.05);
-      stores.push({ id: storeId, lat: storeLat, lng: storeLng, name: `${city} Store #${i+1}` });
+    if (!city || !state) {
+      return res.status(400).json({ error: 'City and state parameters are required' });
     }
     
-    // Create sellers
-    const sellers = [];
-    for (let i = 0; i < sellerCount; i++) {
-      const sellerId = 2000 + i;
-      const sellerLat = 37.7749 + (Math.random() * 0.2 - 0.1);
-      const sellerLng = -122.4194 + (Math.random() * 0.2 - 0.1);
-      sellers.push({ id: sellerId, lat: sellerLat, lng: sellerLng, name: `Seller ${i+1}` });
-    }
+    const query = `
+      SELECT 
+        s.STORE_ID,
+        s.STORE_LOCATION_NAME,
+        s.LATITUDE as store_lat,
+        s.LONGITUDE as store_lng,
+        o.SELLER_ID,
+        sel.SELLER_FULL_NAME,
+        sel.LATITUDE as seller_lat, 
+        sel.LONGITUDE as seller_lng,
+        COUNT(DISTINCT o.ORDER_ID) as connection_count,
+        SUM(o.ORDER_GMV) as connection_gmv
+      FROM 
+        STORES s
+      JOIN 
+        ORDERS o ON s.STORE_ID = o.STORE_ID
+      JOIN 
+        SELLERS sel ON o.SELLER_ID = sel.SELLER_ID
+      WHERE 
+        s.STORE_CITY = ? 
+        AND s.STORE_STATE = ?
+        AND s.LATITUDE IS NOT NULL 
+        AND s.LONGITUDE IS NOT NULL
+        AND sel.LATITUDE IS NOT NULL 
+        AND sel.LONGITUDE IS NOT NULL
+      GROUP BY
+        s.STORE_ID, s.STORE_LOCATION_NAME, s.LATITUDE, s.LONGITUDE,
+        o.SELLER_ID, sel.SELLER_FULL_NAME, sel.LATITUDE, sel.LONGITUDE
+      ORDER BY
+        connection_gmv DESC
+    `;
     
-    // Create connections
-    for (const store of stores) {
-      // Each store connects to 1-3 sellers
-      const connectionCount = Math.floor(Math.random() * 3) + 1;
-      for (let i = 0; i < connectionCount; i++) {
-        const seller = sellers[Math.floor(Math.random() * sellers.length)];
+    snowflakeConnection.execute({
+      sqlText: query,
+      binds: [city, state],
+      complete: function(err, stmt, rows) {
+        if (err) {
+          console.error('Failed to execute query:', err);
+          return res.status(500).json({ error: 'Database query failed: ' + err.message });
+        }
         
-        networkData.push({
-          STORE_ID: store.id,
-          STORE_LOCATION_NAME: store.name,
-          store_lat: store.lat,
-          store_lng: store.lng,
-          SELLER_ID: seller.id,
-          SELLER_FULL_NAME: seller.name,
-          seller_lat: seller.lat,
-          seller_lng: seller.lng
-        });
+        if (!rows || rows.length === 0) {
+          console.warn(`No network connections found for city ${city}, state ${state}`);
+          return res.json([]); // Return empty array instead of error
+        }
+        
+        return res.json(rows);
       }
-    }
-    
-    res.json(networkData);
+    });
   } catch (error) {
     console.error('Error fetching network data:', error);
-    res.status(500).json({ error: 'Failed to fetch data' });
+    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
+  }
+});
+
+// API route for store details (when clicking on a store)
+app.get('/api/store/:storeId', async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    
+    if (!storeId) {
+      return res.status(400).json({ error: 'Store ID parameter is required' });
+    }
+    
+    const query = `
+      SELECT 
+        s.STORE_ID,
+        s.STORE_LOCATION_NAME,
+        s.STORE_ADDRESS,
+        s.STORE_CITY,
+        s.STORE_STATE,
+        s.STORE_ZIP_CODE,
+        s.LATITUDE,
+        s.LONGITUDE,
+        s.STORE_LIFETIME_GMV,
+        s.STORE_LIFETIME_ORDERS,
+        s.GMV_LAST_MONTH,
+        s.GMV_CURRENT_MONTH,
+        s.LATEST_SELLER_ID,
+        sel.SELLER_FULL_NAME,
+        -- Get order history
+        COUNT(o.ORDER_ID) as total_orders,
+        MAX(o.ORDER_CREATED_AT) as last_order_date,
+        SUM(CASE WHEN MONTH(o.ORDER_CREATED_AT) = MONTH(CURRENT_DATE()) 
+                 AND YEAR(o.ORDER_CREATED_AT) = YEAR(CURRENT_DATE()) 
+            THEN o.ORDER_GMV ELSE 0 END) as current_month_gmv,
+        SUM(CASE WHEN DATEDIFF(month, o.ORDER_CREATED_AT, CURRENT_DATE()) = 1 
+            THEN o.ORDER_GMV ELSE 0 END) as last_month_gmv,
+        SUM(CASE WHEN DATEDIFF(month, o.ORDER_CREATED_AT, CURRENT_DATE()) = 2 
+            THEN o.ORDER_GMV ELSE 0 END) as two_months_ago_gmv
+      FROM 
+        STORES s
+      LEFT JOIN
+        ORDERS o ON s.STORE_ID = o.STORE_ID
+      LEFT JOIN
+        SELLERS sel ON s.LATEST_SELLER_ID = sel.SELLER_ID
+      WHERE 
+        s.STORE_ID = ?
+      GROUP BY
+        s.STORE_ID, s.STORE_LOCATION_NAME, s.STORE_ADDRESS, s.STORE_CITY, s.STORE_STATE,
+        s.STORE_ZIP_CODE, s.LATITUDE, s.LONGITUDE, s.STORE_LIFETIME_GMV, s.STORE_LIFETIME_ORDERS,
+        s.GMV_LAST_MONTH, s.GMV_CURRENT_MONTH, s.LATEST_SELLER_ID, sel.SELLER_FULL_NAME
+    `;
+    
+    snowflakeConnection.execute({
+      sqlText: query,
+      binds: [storeId],
+      complete: function(err, stmt, rows) {
+        if (err) {
+          console.error('Failed to execute query:', err);
+          return res.status(500).json({ error: 'Database query failed: ' + err.message });
+        }
+        
+        if (!rows || rows.length === 0) {
+          console.warn(`No store found with ID ${storeId}`);
+          return res.status(404).json({ error: 'Store not found' });
+        }
+        
+        return res.json(rows[0]); // Return the first (and should be only) row
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching store details:', error);
+    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
+  }
+});
+
+// API route for seller details (when clicking on a seller)
+app.get('/api/seller/:sellerId', async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    
+    if (!sellerId) {
+      return res.status(400).json({ error: 'Seller ID parameter is required' });
+    }
+    
+    const query = `
+      SELECT 
+        s.SELLER_ID,
+        s.SELLER_FULL_NAME,
+        s.SELLER_ADDRESS,
+        s.SELLER_CITY,
+        s.SELLER_STATE,
+        s.SELLER_ZIP_CODE,
+        s.LATITUDE,
+        s.LONGITUDE,
+        s.SELLER_TOTAL_GMV,
+        s.GMV_LAST_MONTH,
+        s.GMV_MTD,
+        s.STORES_LAST_MONTH,
+        s.ORDERS_MTD,
+        -- Get connected stores
+        COUNT(DISTINCT o.STORE_ID) as connected_stores_count,
+        -- Get recent sales performance
+        SUM(CASE WHEN DATEDIFF(day, o.ORDER_CREATED_AT, CURRENT_DATE()) <= 30 
+            THEN o.ORDER_GMV ELSE 0 END) as last_30_days_gmv,
+        COUNT(CASE WHEN DATEDIFF(day, o.ORDER_CREATED_AT, CURRENT_DATE()) <= 30 
+            THEN o.ORDER_ID ELSE NULL END) as last_30_days_orders
+      FROM 
+        SELLERS s
+      LEFT JOIN
+        ORDERS o ON s.SELLER_ID = o.SELLER_ID
+      WHERE 
+        s.SELLER_ID = ?
+      GROUP BY
+        s.SELLER_ID, s.SELLER_FULL_NAME, s.SELLER_ADDRESS, s.SELLER_CITY, 
+        s.SELLER_STATE, s.SELLER_ZIP_CODE, s.LATITUDE, s.LONGITUDE,
+        s.SELLER_TOTAL_GMV, s.GMV_LAST_MONTH, s.GMV_MTD, s.STORES_LAST_MONTH, s.ORDERS_MTD
+    `;
+    
+    snowflakeConnection.execute({
+      sqlText: query,
+      binds: [sellerId],
+      complete: function(err, stmt, rows) {
+        if (err) {
+          console.error('Failed to execute query:', err);
+          return res.status(500).json({ error: 'Database query failed: ' + err.message });
+        }
+        
+        if (!rows || rows.length === 0) {
+          console.warn(`No seller found with ID ${sellerId}`);
+          return res.status(404).json({ error: 'Seller not found' });
+        }
+        
+        return res.json(rows[0]); // Return the first (and should be only) row
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching seller details:', error);
+    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
   }
 });
 
