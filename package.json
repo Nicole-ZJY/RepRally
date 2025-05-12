@@ -1,0 +1,27 @@
+{
+  "name": "reprally-heatmap-center",
+  "version": "1.0.0",
+  "description": "Geographical heatmap visualization for RepRally store performance",
+  "main": "app.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node app.mjs",
+    "dev": "nodemon app.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "lowdb": "^6.0.1",
+    "node-cron": "^3.0.2",
+    "snowflake-sdk": "^1.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
