@@ -496,24 +496,24 @@ app.get('/api/cities-gmv/:state', async (req, res) => {
   }
 });
 
+// In app.mjs, modify the /api/state-stores/:state endpoint handler:
+
 app.get('/api/state-stores/:state', async (req, res) => {
   try {
     let { state } = req.params;
 
     console.log(`API Request: /api/state-stores/${state}`);
     
-    // Log Snowflake connection status
-    console.log(`Snowflake connection available: ${!!snowflakeConnection}`);
-    
     if (!state) {
       return res.status(400).json({ error: 'State parameter is required' });
     }
 
-      // Get both state code and full name to try multiple formats
+    // Normalize the state format
+    // Get both state code and full name to try multiple formats
     const stateCode = getStateCodeFromName(state);
     const stateName = getStateNameFromCode(state);
 
-        // Create an array of state formats to try
+    // Create an array of state formats to try
     const stateFormats = [
       state,                   // Original format
       stateCode,               // State code
@@ -523,32 +523,10 @@ app.get('/api/state-stores/:state', async (req, res) => {
     ].filter(Boolean);  // Remove null/undefined values
 
     console.log(`Trying state formats: ${stateFormats.join(', ')}`);
-        // Build a query that will try all state formats
-
-    if (stateCode) {
-      console.log(`Converted state name "${state}" to state code "${stateCode}"`);
-      state = stateCode; // Use the state code for the database query
-    } else {
-      console.log(`No conversion found for "${state}", using as is`);
-    }
-    const stateFormatsToTry = [
-      state,                      // Original format
-      stateCode,                  // Two-letter code (if converted)
-      state.toUpperCase(),        // Uppercase
-      state.toLowerCase(),        // Lowercase
-      getStateNameFromCode(state) // Full name (if state was a code)
-    ].filter(Boolean); // Remove null/undefined values
     
-    console.log(`[State Stores API] Will try these formats:`, stateFormatsToTry);
-    // Check if we have an active Snowflake connection
-    if (!snowflakeConnection) {
-      console.error('No active Snowflake connection');
-      return res.status(503).json({ error: 'Database connection unavailable' });
-    }
-  
-
-    // Enhanced query to join STORES with ORDERS to get more accurate metrics
-    const query = `
+    // Build a query that will try all state formats
+    const placeholders = stateFormats.map((_ , i) => `?`).join(' OR s.STORE_STATE = ');
+    const modifiedQuery = `
       SELECT 
         s.STORE_ID,
         s.SELLER_ID,
@@ -579,7 +557,7 @@ app.get('/api/state-stores/:state', async (req, res) => {
       LEFT JOIN
         ORDERS o ON s.STORE_ID = o.STORE_ID
       WHERE 
-        s.STORE_STATE = ?
+        (s.STORE_STATE = ${placeholders})
         AND s.LATITUDE IS NOT NULL
         AND s.LONGITUDE IS NOT NULL
       GROUP BY
@@ -592,61 +570,25 @@ app.get('/api/state-stores/:state', async (req, res) => {
       LIMIT 200
     `;
 
-    console.log(`[State Stores API] Executing query with binds:`, stateFormatsToTry);
-        // Log the request
-    console.log(`Fetching stores for state: ${state}`);
-    const placeholders = stateFormatsToTry.map((_ , i) => `?`).join(' OR s.STORE_STATE = ');
-    const modifiedQuery = query.replace('s.STORE_STATE = ?', `(s.STORE_STATE = ${placeholders})`);
-
     snowflakeConnection.execute({
       sqlText: modifiedQuery,
       binds: stateFormats,
       complete: function(err, stmt, rows) {
         if (err) {
           console.error('Failed to execute query:', err);
-          console.error('SQL Query:', query);
-          console.error('Parameters:', [state]);
           return res.status(500).json({ error: 'Database query failed: ' + err.message });
         }
         
         if (!rows || rows.length === 0) {
           console.warn(`No stores found for state ${state}`);
-          
-          // Try the alternate format (if we used code, try name; if we used name, try code)
-          const alternateState = stateCode ? getStateNameFromCode(stateCode) : getStateCodeFromName(state);
-          if (alternateState) {
-            console.log(`Trying alternate state format: ${alternateState}`);
-            
-            snowflakeConnection.execute({
-              sqlText: query,
-              binds: [alternateState],
-              complete: function(altErr, altStmt, altRows) {
-                if (altErr) {
-                  console.error('Failed to execute alternate query:', altErr);
-                  return res.status(404).json({ error: 'No stores found for this state' });
-                }
-                
-                if (!altRows || altRows.length === 0) {
-                  console.warn(`No stores found for alternate state ${alternateState}`);
-                  return res.status(404).json({ error: 'No stores found for this state' });
-                }
-                
-                console.log(`Found ${altRows.length} stores using alternate state format: ${alternateState}`);
-                return res.json(altRows);
-              }
-            });
-          } else {
-            return res.status(404).json({ error: 'No stores found for this state' });
-          }
-        } else {
-          console.log(`Found ${rows.length} stores for state ${state}`);
-          return res.json(rows);
+          return res.status(404).json({ error: 'No stores found for this state' });
         }
+        
+        return res.json(rows);
       }
     });
   } catch (error) {
     console.error('Error fetching state stores:', error);
-    console.error('Stack trace:', error.stack);
     res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
   }
 });
