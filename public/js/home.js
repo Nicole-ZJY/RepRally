@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const selectedDetails = document.getElementById('selected-details');
     const selectedTitle = document.getElementById('selected-title');
     const selectedContent = document.getElementById('selected-content');
+    const metricSelector = document.getElementById('metric-selector');
     
     // Initialize MapManager
     const mapManager = new MapManager('map');
@@ -29,7 +30,8 @@ document.addEventListener('DOMContentLoaded', function() {
         currentCitiesData: [],
         currentStoresData: [],
         currentNetworkData: [],
-        isNetworkViewActive: false
+        isNetworkViewActive: false,
+        selectedMetric: 'total_gmv'
     };
     
     // Initialize app
@@ -99,6 +101,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle metric change
     function handleMetricChange(e) {
         const metricType = e.target.value;
+        appState.selectedMetric = metricType;
+        
         const currentState = mapManager.getCurrentState();
         
         if (currentState.level === 'state' && currentState.state) {
@@ -126,15 +130,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (state && typeof state.STATE === 'string' && !state.state) {
                     // Convert Snowflake's uppercase column names to expected format
                     return {
-                        state: convertStateCodeToName(state.STATE),
+                        state: state.STATE,
                         store_count: state.STORE_COUNT || 0,
                         total_gmv: state.TOTAL_GMV || 0
                     };
                 }
                 return state;
             });
-            
-            console.log('Processed states data:', statesData);
             
             // Validate states data
             if (!Array.isArray(statesData)) {
@@ -148,7 +150,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 typeof state.state === 'string' && 
                 !isNaN(state.store_count) && !isNaN(state.total_gmv)
             );
-            console.log('Filtered states data:', filteredData);
             
             appState.currentStatesData = filteredData;
             
@@ -166,79 +167,18 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    // Helper function to convert state codes to names
-    function convertStateCodeToName(stateCode) {
-        const stateMap = {
-            'AL': 'Alabama',
-            'AK': 'Alaska',
-            'AZ': 'Arizona',
-            'AR': 'Arkansas',
-            'CA': 'California',
-            'CO': 'Colorado',
-            'CT': 'Connecticut',
-            'DE': 'Delaware',
-            'FL': 'Florida',
-            'GA': 'Georgia',
-            'HI': 'Hawaii',
-            'ID': 'Idaho',
-            'IL': 'Illinois',
-            'IN': 'Indiana',
-            'IA': 'Iowa',
-            'KS': 'Kansas',
-            'KY': 'Kentucky',
-            'LA': 'Louisiana',
-            'ME': 'Maine',
-            'MD': 'Maryland',
-            'MA': 'Massachusetts',
-            'MI': 'Michigan',
-            'MN': 'Minnesota',
-            'MS': 'Mississippi',
-            'MO': 'Missouri',
-            'MT': 'Montana',
-            'NE': 'Nebraska',
-            'NV': 'Nevada',
-            'NH': 'New Hampshire',
-            'NJ': 'New Jersey',
-            'NM': 'New Mexico',
-            'NY': 'New York',
-            'NC': 'North Carolina',
-            'ND': 'North Dakota',
-            'OH': 'Ohio',
-            'OK': 'Oklahoma',
-            'OR': 'Oregon',
-            'PA': 'Pennsylvania',
-            'RI': 'Rhode Island',
-            'SC': 'South Carolina',
-            'SD': 'South Dakota',
-            'TN': 'Tennessee',
-            'TX': 'Texas',
-            'UT': 'Utah',
-            'VT': 'Vermont',
-            'VA': 'Virginia',
-            'WA': 'Washington',
-            'WV': 'West Virginia',
-            'WI': 'Wisconsin',
-            'WY': 'Wyoming',
-            'DC': 'District of Columbia'
-        };
-        
-        return stateMap[stateCode] || stateCode;
-    }
-    
-    // Load state-level data with stores and sellers
+    // Load state-level data
     async function loadStateData(stateName, metricType = 'total_gmv') {
         showLoading(`Loading data for ${stateName}...`);
         
         try {
-            console.log(`HomeJS: Loading data for state: ${stateName}`);
-            
-            // First, try to get cities data as fallback
+            // Fetch cities data for the state (as fallback or for city-based visualization)
             const citiesResponse = await fetch(`/api/cities-gmv/${encodeURIComponent(stateName)}`);
             let citiesData = [];
             
             if (citiesResponse.ok) {
                 citiesData = await citiesResponse.json();
-                console.log(`HomeJS: Received ${citiesData.length} cities from API for ${stateName}`);
+                console.log(`Received ${citiesData.length} cities from API for ${stateName}`);
                 
                 // Store in app state
                 appState.currentCitiesData = citiesData;
@@ -247,8 +187,12 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update UI before rendering map
             updateStateView(stateName, citiesData);
             
-            // Render map with stores and sellers
-            mapManager.renderStateMap(stateName, citiesData, metricType);
+            // Show metric selector
+            metricSelector.classList.remove('hidden');
+            document.getElementById('metric-select').value = metricType || appState.selectedMetric;
+            
+            // Render map with cities or stores and sellers
+            mapManager.renderStateMap(stateName, citiesData, metricType || appState.selectedMetric);
             
             hideLoading();
         } catch (error) {
@@ -346,6 +290,9 @@ document.addEventListener('DOMContentLoaded', function() {
         toggleNetworkBtn.classList.add('hidden');
         appState.isNetworkViewActive = false;
         
+        // Hide metric selector
+        metricSelector.classList.add('hidden');
+        
         // Update legend with actual GMV values
         updateGMVLegend(statesData);
     }
@@ -361,76 +308,19 @@ document.addEventListener('DOMContentLoaded', function() {
         const minGMV = Math.min(...gmvValues);
         const maxGMV = Math.max(...gmvValues);
         
-        // Calculate legend tick values using logarithmic scale
-        const logMin = Math.log(minGMV > 0 ? minGMV : 1);
-        const logMax = Math.log(maxGMV);
-        const logRange = logMax - logMin;
+        // Update legend in the map-legend div if it exists
+        const legendElement = document.querySelector('.map-legend');
+        if (!legendElement) return;
         
-        const legendMin = document.querySelector('.legend-min');
-        const legendMax = document.querySelector('.legend-max');
+        const legendMinElement = legendElement.querySelector('.legend-min');
+        const legendMaxElement = legendElement.querySelector('.legend-max');
         
-        // Update legend labels
-        legendMin.textContent = formatCurrency(minGMV, true);
-        legendMax.textContent = formatCurrency(maxGMV, true);
+        if (legendMinElement) {
+            legendMinElement.textContent = formatCurrency(minGMV, true);
+        }
         
-        // Create intermediate tick marks if there's a wide range
-        if (maxGMV / minGMV > 100) {
-            const legendColors = document.querySelector('.legend-colors');
-            
-            // Clear existing ticks
-            const existingTicks = document.querySelectorAll('.legend-tick');
-            existingTicks.forEach(tick => tick.remove());
-            
-            // Create tick container if it doesn't exist
-            let tickContainer = document.querySelector('.legend-ticks');
-            if (!tickContainer) {
-                tickContainer = document.createElement('div');
-                tickContainer.className = 'legend-ticks';
-                legendColors.parentNode.appendChild(tickContainer);
-            }
-            
-            // Add CSS for ticks if not already present
-            if (!document.querySelector('#legend-tick-styles')) {
-                const style = document.createElement('style');
-                style.id = 'legend-tick-styles';
-                style.textContent = `
-                    .legend-ticks {
-                        position: relative;
-                        height: 16px;
-                        margin-top: 3px;
-                        width: 100%;
-                    }
-                    .legend-tick {
-                        position: absolute;
-                        top: 0;
-                        transform: translateX(-50%);
-                        font-size: 10px;
-                        color: var(--text-light);
-                    }
-                    .legend-tick:before {
-                        content: '';
-                        display: block;
-                        height: 4px;
-                        width: 1px;
-                        background: var(--text-light);
-                        margin: 0 auto 2px;
-                    }
-                `;
-                document.head.appendChild(style);
-            }
-            
-            // Add intermediate ticks using log scale
-            const numTicks = 3; // Number of intermediate ticks
-            for (let i = 1; i <= numTicks; i++) {
-                const position = i / (numTicks + 1);
-                const logTickValue = Math.exp(logMin + (logRange * position));
-                
-                const tick = document.createElement('div');
-                tick.className = 'legend-tick';
-                tick.style.left = `${position * 100}%`;
-                tick.textContent = formatCurrency(logTickValue, true);
-                tickContainer.appendChild(tick);
-            }
+        if (legendMaxElement) {
+            legendMaxElement.textContent = formatCurrency(maxGMV, true);
         }
     }
     
@@ -468,10 +358,6 @@ document.addEventListener('DOMContentLoaded', function() {
         // Hide network toggle
         toggleNetworkBtn.classList.add('hidden');
         appState.isNetworkViewActive = false;
-        
-        // Show metric selector
-        const metricSelector = document.getElementById('metric-selector');
-        metricSelector.classList.remove('hidden');
     }
     
     // Update city view
@@ -491,7 +377,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Calculate totals
         const totalStoreCount = storesData.length;
-        const totalGMVValue = storesData.reduce((sum, store) => sum + store.GMV_LAST_MONTH, 0);
+        const totalGMVValue = storesData.reduce((sum, store) => sum + Number(store.GMV_LAST_MONTH || 0), 0);
         const avgGMVValue = totalStoreCount > 0 ? totalGMVValue / totalStoreCount : 0;
         
         // Update stats
@@ -507,7 +393,6 @@ document.addEventListener('DOMContentLoaded', function() {
         goBackBtn.disabled = false;
         
         // Hide metric selector
-        const metricSelector = document.getElementById('metric-selector');
         metricSelector.classList.add('hidden');
     }
     
@@ -657,7 +542,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Show hover info
         hoverInfo.classList.remove('hidden');
-        hoverTitle.textContent = seller.fullName || `Seller #${seller.id}`;
+        hoverTitle.textContent = seller.SELLER_FULL_NAME || `Seller #${seller.SELLER_ID}`;
         
         // Generate hover details HTML
         const detailsHTML = `
@@ -667,23 +552,23 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
             <div class="hover-detail-item">
                 <span class="hover-label">GMV (Last Month):</span>
-                <span class="hover-value">${formatCurrency(seller.gmvLastMonth || 0)}</span>
+                <span class="hover-value">${formatCurrency(seller.GMV_LAST_MONTH || 0)}</span>
             </div>
             <div class="hover-detail-item">
                 <span class="hover-label">GMV (Month-to-Date):</span>
-                <span class="hover-value">${formatCurrency(seller.gmvMTD || 0)}</span>
+                <span class="hover-value">${formatCurrency(seller.GMV_MTD || 0)}</span>
             </div>
             <div class="hover-detail-item">
                 <span class="hover-label">Lifetime GMV:</span>
-                <span class="hover-value">${formatCurrency(seller.lifetimeGMV || 0)}</span>
+                <span class="hover-value">${formatCurrency(seller.SELLER_TOTAL_GMV || 0)}</span>
             </div>
             <div class="hover-detail-item">
                 <span class="hover-label">Stores (Last Month):</span>
-                <span class="hover-value">${formatNumber(seller.storesLastMonth || 0)}</span>
+                <span class="hover-value">${formatNumber(seller.STORES_LAST_MONTH || 0)}</span>
             </div>
             <div class="hover-detail-item">
                 <span class="hover-label">Orders (Month-to-Date):</span>
-                <span class="hover-value">${formatNumber(seller.ordersMTD || 0)}</span>
+                <span class="hover-value">${formatNumber(seller.ORDERS_MTD || 0)}</span>
             </div>
         `;
         
@@ -728,7 +613,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     function navigateToState(stateName) {
-        loadStateData(stateName);
+        loadStateData(stateName, appState.selectedMetric);
     }
     
     function navigateToCity(cityName, stateName) {
