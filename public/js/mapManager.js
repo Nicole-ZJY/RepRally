@@ -794,7 +794,18 @@ class MapManager {
         fetch(`/api/state-stores/${encodeURIComponent(stateName)}`)
             .then(response => {
                 if (!response.ok) {
+                    console.warn(`Failed to fetch stores for ${stateName} with status ${response.status}`);
+
+                    if (response.status === 404) {
+                        const stateCode = this.getStateCodeFromName(stateName);
+                        if (stateCode && stateCode !== stateName) {
+                        console.log(`Retrying with state code: ${stateCode}`);
+                        return fetch(`/api/state-stores/${encodeURIComponent(stateCode)}`);
+                        }
+                    }
+
                     throw new Error(`Failed to fetch stores: ${response.status}`);
+
                 }
                 return response.json();
             })
