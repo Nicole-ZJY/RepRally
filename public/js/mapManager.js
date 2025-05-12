@@ -1,4 +1,7 @@
-// Enhanced Map Manager for RepRally HeatMap Center
+    /**
+     * Add custom CSS for map elements
+     */
+    // Enhanced Map Manager for RepRally HeatMap Center
 
 class MapManager {
     constructor(mapElementId) {
@@ -8,10 +11,11 @@ class MapManager {
         this.currentState = null;
         this.currentCity = null;
         this.dataLayer = null;
-        this.networkLayer = null;
+        this.storesLayer = null;
+        this.sellersLayer = null;
+        this.connectionsLayer = null;
         this.isNetworkView = false;
         this.geoData = null;
-        this.stateGeoData = null;
         
         // Map options
         this.mapOptions = {
@@ -52,28 +56,32 @@ class MapManager {
                 color: '#1a73e8',
                 dashArray: '',
                 fillOpacity: 0.8
+            },
+            store: {
+                radius: 8,
+                fillColor: '#1a73e8',
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            },
+            seller: {
+                radius: 6,
+                fillColor: '#34a853',
+                color: '#fff', 
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            },
+            connection: {
+                color: '#fbbc04',
+                weight: 2,
+                opacity: 0.7,
+                dashArray: '5, 5'
             }
         };
-
-        // Metric selector event listener
-        document.getElementById('metric-select')?.addEventListener('change', (e) => {
-            if (this.currentLevel === 'state' && this.currentState) {
-                // Re-render state map with new metric
-                const metricType = e.target.value;
-                this.renderStateMap(this.currentState, this.getCurrentCitiesData(), metricType);
-            }
-        });
     }
     
-    /**
-     * Get currently active cities data
-     */
-    getCurrentCitiesData() {
-        // This would get the current cities data from app state
-        // For now, get from any window.appState or return empty array
-        return window.appState?.currentCitiesData || [];
-    }
-
     /**
      * Initialize the map
      */
@@ -88,7 +96,7 @@ class MapManager {
                 zoomControl: true
             });
             
-            // Add tile layer - using a more neutral basemap
+            // Add tile layer
             L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
                 attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
                 subdomains: 'abcd',
@@ -98,15 +106,100 @@ class MapManager {
             // Load GeoJSON data for US states boundaries
             await this.loadGeoData();
             
+            // Add custom CSS for markers
+            this.addCustomCSS();
+            
             // Initial rendering of the map
             this.renderNationMap();
-
-            // Return success
+            
             return true;
         } catch (error) {
             console.error('Map initialization error:', error);
             throw error;
         }
+    }
+    
+    /**
+     * Add custom CSS for map elements
+     */
+    addCustomCSS() {
+        if (document.getElementById('map-custom-styles')) {
+            return; // Styles already added
+        }
+        
+        const styleEl = document.createElement('style');
+        styleEl.id = 'map-custom-styles';
+        styleEl.textContent = `
+            .seller-cross {
+                position: relative;
+                width: 16px;
+                height: 16px;
+                transform: rotate(45deg);
+            }
+            
+            .seller-cross:before,
+            .seller-cross:after {
+                content: '';
+                position: absolute;
+                background-color: #34a853;
+            }
+            
+            .seller-cross:before {
+                width: 100%;
+                height: 4px;
+                top: 6px;
+                left: 0;
+            }
+            
+            .seller-cross:after {
+                width: 4px;
+                height: 100%;
+                top: 0;
+                left: 6px;
+            }
+            
+            .seller-marker.highlighted .seller-cross {
+                transform: rotate(45deg) scale(1.3);
+                box-shadow: 0 0 8px rgba(52, 168, 83, 0.8);
+            }
+            
+            .highlight-connection {
+                animation: pulse 1.5s infinite;
+            }
+            
+            @keyframes pulse {
+                0% { opacity: 0.9; }
+                50% { opacity: 0.5; }
+                100% { opacity: 0.9; }
+            }
+            
+            .custom-tooltip {
+                font-size: 12px;
+                padding: 6px 8px;
+                background-color: rgba(255, 255, 255, 0.95);
+                border-radius: 4px;
+                box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+                border: 1px solid #dadce0;
+            }
+            
+            .tooltip-title {
+                font-weight: bold;
+                margin-bottom: 4px;
+                color: #1a73e8;
+            }
+            
+            .tooltip-address {
+                font-style: italic;
+                margin-bottom: 4px;
+                color: #5f6368;
+            }
+            
+            .store-tooltip div,
+            .seller-tooltip div {
+                margin-bottom: 3px;
+            }
+        `;
+        document.head.appendChild(styleEl);
     }
     
     /**
@@ -208,75 +301,11 @@ class MapManager {
             stateDataMap[stateName.toUpperCase()] = data;
             
             // Also add state codes if available
-            const stateCode = getStateCodeFromName(stateName);
+            const stateCode = this.getStateCodeFromName(stateName);
             if (stateCode) {
                 stateDataMap[stateCode] = data;
             }
         });
-        
-        // Helper function to get state code from name
-        function getStateCodeFromName(stateName) {
-            const stateNameToCode = {
-                'alabama': 'AL',
-                'alaska': 'AK',
-                'arizona': 'AZ',
-                'arkansas': 'AR',
-                'california': 'CA',
-                'colorado': 'CO',
-                'connecticut': 'CT',
-                'delaware': 'DE',
-                'florida': 'FL',
-                'georgia': 'GA',
-                'hawaii': 'HI',
-                'idaho': 'ID',
-                'illinois': 'IL',
-                'indiana': 'IN',
-                'iowa': 'IA',
-                'kansas': 'KS',
-                'kentucky': 'KY',
-                'louisiana': 'LA',
-                'maine': 'ME',
-                'maryland': 'MD',
-                'massachusetts': 'MA',
-                'michigan': 'MI',
-                'minnesota': 'MN',
-                'mississippi': 'MS',
-                'missouri': 'MO',
-                'montana': 'MT',
-                'nebraska': 'NE',
-                'nevada': 'NV',
-                'new hampshire': 'NH',
-                'new jersey': 'NJ',
-                'new mexico': 'NM',
-                'new york': 'NY',
-                'north carolina': 'NC',
-                'north dakota': 'ND',
-                'ohio': 'OH',
-                'oklahoma': 'OK',
-                'oregon': 'OR',
-                'pennsylvania': 'PA',
-                'rhode island': 'RI',
-                'south carolina': 'SC', 
-                'south dakota': 'SD',
-                'tennessee': 'TN',
-                'texas': 'TX',
-                'utah': 'UT',
-                'vermont': 'VT',
-                'virginia': 'VA',
-                'washington': 'WA',
-                'west virginia': 'WV',
-                'wisconsin': 'WI',
-                'wyoming': 'WY',
-                'district of columbia': 'DC'
-            };
-            
-            // Check if it's already a code
-            if (stateName && stateName.length === 2 && stateName === stateName.toUpperCase()) {
-                return stateName;
-            }
-            
-            return stateName && typeof stateName === 'string' ? stateNameToCode[stateName.toLowerCase()] : null;
-        }
         
         // Create GeoJSON layer with heatmap colors
         this.dataLayer = L.geoJSON(this.geoData, {
@@ -288,7 +317,7 @@ class MapManager {
                     return this.styleOptions.nationDefault;
                 }
                 
-                const stateCode = getStateCodeFromName(stateName);
+                const stateCode = this.getStateCodeFromName(stateName);
                 
                 // Try to find data by state name or code
                 let stateData = stateDataMap[stateName.toUpperCase()] || stateDataMap[stateCode];
@@ -322,7 +351,7 @@ class MapManager {
             },
             onEachFeature: (feature, layer) => {
                 const stateName = feature.properties.name;
-                const stateCode = getStateCodeFromName(stateName);
+                const stateCode = this.getStateCodeFromName(stateName);
                 
                 const stateData = stateDataMap[stateName.toUpperCase()] || 
                                   stateDataMap[stateCode] || 
@@ -357,21 +386,97 @@ class MapManager {
     }
     
     /**
-     * Render the state-level map with individual stores and sellers
+     * Get state code from name
      * @param {string} stateName - The state name
-     * @param {Array} citiesData - GMV data by city (used as fallback)
-     * @param {string} metricType - The metric to visualize ('total_gmv', 'store_count', or 'avg_gmv_per_store')
+     * @returns {string} The state code
      */
-    renderStateMap(stateName, citiesData = [], metricType = 'total_gmv') {
-        console.log(`Rendering state map for ${stateName} with individual stores and sellers`);
+    getStateCodeFromName(stateName) {
+        const stateNameToCode = {
+            'alabama': 'AL',
+            'alaska': 'AK',
+            'arizona': 'AZ',
+            'arkansas': 'AR',
+            'california': 'CA',
+            'colorado': 'CO',
+            'connecticut': 'CT',
+            'delaware': 'DE',
+            'florida': 'FL',
+            'georgia': 'GA',
+            'hawaii': 'HI',
+            'idaho': 'ID',
+            'illinois': 'IL',
+            'indiana': 'IN',
+            'iowa': 'IA',
+            'kansas': 'KS',
+            'kentucky': 'KY',
+            'louisiana': 'LA',
+            'maine': 'ME',
+            'maryland': 'MD',
+            'massachusetts': 'MA',
+            'michigan': 'MI',
+            'minnesota': 'MN',
+            'mississippi': 'MS',
+            'missouri': 'MO',
+            'montana': 'MT',
+            'nebraska': 'NE',
+            'nevada': 'NV',
+            'new hampshire': 'NH',
+            'new jersey': 'NJ',
+            'new mexico': 'NM',
+            'new york': 'NY',
+            'north carolina': 'NC',
+            'north dakota': 'ND',
+            'ohio': 'OH',
+            'oklahoma': 'OK',
+            'oregon': 'OR',
+            'pennsylvania': 'PA',
+            'rhode island': 'RI',
+            'south carolina': 'SC', 
+            'south dakota': 'SD',
+            'tennessee': 'TN',
+            'texas': 'TX',
+            'utah': 'UT',
+            'vermont': 'VT',
+            'virginia': 'VA',
+            'washington': 'WA',
+            'west virginia': 'WV',
+            'wisconsin': 'WI',
+            'wyoming': 'WY',
+            'district of columbia': 'DC'
+        };
         
-        // Validate input
+        // Check if it's already a code
+        if (stateName && stateName.length === 2 && stateName === stateName.toUpperCase()) {
+            return stateName;
+        }
+        
+        return stateName && typeof stateName === 'string' ? stateNameToCode[stateName.toLowerCase()] : null;
+    }
+    
+    /**
+     * Render the state-level map with stores and sellers
+     * @param {string} stateName - The state name
+     * @param {Array} storesData - Store data with coordinates
+     * @param {Array} sellersData - Seller data with coordinates
+     */
+    renderStoresAndSellers(stateName, storesData = [], sellersData = []) {
+        console.log(`Rendering ${storesData.length} stores and ${sellersData.length} sellers for ${stateName}`);
+        
+        // Validate inputs
         if (!stateName) {
             console.error('State name is required');
             return;
         }
         
-        // Update state
+        if (!storesData || !Array.isArray(storesData)) {
+            storesData = [];
+        }
+        
+        if (!sellersData || !Array.isArray(sellersData)) {
+            sellersData = [];
+        }
+        
+        // Set current state
         this.currentLevel = 'state';
         this.currentState = stateName;
         this.currentCity = null;
@@ -388,8 +493,6 @@ class MapManager {
         
         if (!stateFeature) {
             console.error(`State not found in GeoJSON: ${stateName}`);
-            // Create a fallback view centered on the US
-            this.map.setView(this.mapOptions.nation.center, this.mapOptions.state.zoom);
             return;
         }
         
@@ -408,92 +511,6 @@ class MapManager {
             }
         }).addTo(this.map);
         
-        // Show loading message
-        showLoading(`Loading stores and sellers for ${stateName}...`);
-        
-        // Fetch individual stores for this state
-        fetch(`/api/state-stores/${encodeURIComponent(stateName)}`)
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch stores: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(storesData => {
-                // Check for valid data
-                if (!storesData || !Array.isArray(storesData) || storesData.length === 0) {
-                    console.warn(`No store data available for ${stateName}`);
-                    hideLoading();
-                    
-                    // Fall back to city-based visualization if no individual stores
-                    if (citiesData && citiesData.length > 0) {
-                        this.renderStateMapWithCities(stateName, citiesData, metricType);
-                    }
-                    return;
-                }
-                
-                console.log(`Received ${storesData.length} stores for ${stateName}`);
-                
-                // Filter stores with valid coordinates
-                const validStores = storesData.filter(store => 
-                    store && 
-                    (store.LATITUDE !== undefined || store.latitude !== undefined) && 
-                    (store.LONGITUDE !== undefined || store.longitude !== undefined)
-                );
-                
-                if (validStores.length === 0) {
-                    console.warn(`No stores with valid coordinates for ${stateName}`);
-                    hideLoading();
-                    
-                    // Fall back to city-based visualization
-                    if (citiesData && citiesData.length > 0) {
-                        this.renderStateMapWithCities(stateName, citiesData, metricType);
-                    }
-                    return;
-                }
-                
-                console.log(`${validStores.length} of ${storesData.length} stores have valid coordinates`);
-                
-                // Fetch sellers data for this state
-                return fetch(`/api/state-sellers/${encodeURIComponent(stateName)}`)
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error(`Failed to fetch sellers: ${response.status}`);
-                        }
-                        return response.json();
-                    })
-                    .then(sellersData => {
-                        // Render both stores and sellers
-                        this.renderStoresAndSellers(stateName, validStores, sellersData || []);
-                        hideLoading();
-                    })
-                    .catch(error => {
-                        console.error('Error fetching sellers:', error);
-                        // Still render stores even if sellers fetch fails
-                        this.renderStoresAndSellers(stateName, validStores, []);
-                        hideLoading();
-                    });
-            })
-            .catch(error => {
-                console.error('Error fetching stores:', error);
-                hideLoading();
-                
-                // Fall back to city-based visualization on error
-                if (citiesData && citiesData.length > 0) {
-                    this.renderStateMapWithCities(stateName, citiesData, metricType);
-                }
-            });
-    }
-    
-    /**
-     * Render stores and sellers on the map
-     * @param {string} stateName - The state name
-     * @param {Array} storesData - Stores data with coordinates
-     * @param {Array} sellersData - Sellers data with coordinates
-     */
-    renderStoresAndSellers(stateName, storesData, sellersData) {
-        console.log(`Rendering ${storesData.length} stores and ${sellersData.length} sellers for ${stateName}`);
-        
         // Create layers for stores and sellers
         const storesLayer = L.layerGroup();
         const sellersLayer = L.layerGroup();
@@ -505,39 +522,26 @@ class MapManager {
         const minGMV = validGmvValues.length > 0 ? Math.min(...validGmvValues) : 0;
         const maxGMV = validGmvValues.length > 0 ? Math.max(...validGmvValues) : 1;
         
-        // Process and normalize sellers data
-        const processedSellers = sellersData.filter(seller => 
-            seller && 
-            (seller.LATITUDE !== undefined || seller.latitude !== undefined) && 
-            (seller.LONGITUDE !== undefined || seller.longitude !== undefined)
-        ).map(seller => {
-            return {
-                id: seller.SELLER_ID || seller.seller_id,
-                latitude: seller.LATITUDE || seller.latitude,
-                longitude: seller.LONGITUDE || seller.longitude,
-                fullName: seller.SELLER_FULL_NAME || seller.seller_full_name || `Seller ${seller.SELLER_ID || seller.seller_id}`,
-                lifetimeGMV: seller.SELLER_TOTAL_GMV || seller.seller_total_gmv || 0,
-                gmvLastMonth: seller.GMV_LAST_MONTH || seller.gmv_last_month || 0,
-                gmvMTD: seller.GMV_MTD || seller.gmv_mtd || 0,
-                storesLastMonth: seller.STORES_LAST_MONTH || seller.stores_last_month || 0,
-                ordersMTD: seller.ORDERS_MTD || seller.orders_mtd || 0
-            };
-        });
-        
-        console.log(`${processedSellers.length} sellers with valid coordinates`);
-        
         // Create seller markers
         const sellerMarkers = {};
         
-        processedSellers.forEach(seller => {
+        sellersData.forEach(seller => {
+            // Normalize properties
+            const sellerId = seller.SELLER_ID || seller.seller_id;
+            const latitude = seller.LATITUDE || seller.latitude;
+            const longitude = seller.LONGITUDE || seller.longitude;
+            const sellerName = seller.SELLER_FULL_NAME || seller.seller_full_name || 
+                              `${seller.SELLER_FIRST_NAME || seller.seller_first_name || ''} ${seller.SELLER_LAST_NAME || seller.seller_last_name || ''}`.trim() || 
+                              `Seller ${sellerId}`;
+            
             // Create a cross marker for sellers
             const sellerIcon = L.divIcon({
-                html: `<div class="seller-cross" style="background-color: #34a853;"></div>`,
+                html: `<div class="seller-cross"></div>`,
                 className: 'seller-marker',
                 iconSize: [20, 20]
             });
             
-            const marker = L.marker([seller.latitude, seller.longitude], {
+            const marker = L.marker([latitude, longitude], {
                 icon: sellerIcon
             });
             
@@ -553,12 +557,10 @@ class MapManager {
             // Add tooltip
             const tooltipContent = `
                 <div class="seller-tooltip">
-                    <div class="tooltip-title">${seller.fullName}</div>
-                    <div>Lifetime GMV: ${formatCurrency(seller.lifetimeGMV)}</div>
-                    <div>GMV Last Month: ${formatCurrency(seller.gmvLastMonth)}</div>
-                    <div>GMV Month-to-Date: ${formatCurrency(seller.gmvMTD)}</div>
-                    <div>Stores Last Month: ${formatNumber(seller.storesLastMonth)}</div>
-                    <div>Orders Month-to-Date: ${formatNumber(seller.ordersMTD)}</div>
+                    <div class="tooltip-title">${sellerName}</div>
+                    <div>GMV Last Month: ${formatCurrency(seller.GMV_LAST_MONTH || seller.gmv_last_month || 0)}</div>
+                    <div>GMV Month-to-Date: ${formatCurrency(seller.GMV_MTD || seller.gmv_mtd || 0)}</div>
+                    <div>Stores Last Month: ${formatNumber(seller.STORES_LAST_MONTH || seller.stores_last_month || 0)}</div>
                 </div>
             `;
             
@@ -569,7 +571,7 @@ class MapManager {
             });
             
             // Store seller marker for later reference
-            sellerMarkers[seller.id] = marker;
+            sellerMarkers[sellerId] = marker;
             sellersLayer.addLayer(marker);
         });
         
@@ -670,8 +672,22 @@ class MapManager {
                 
                 // Remove highlighted class from seller markers
                 Object.values(sellerMarkers).forEach(sellerMarker => {
-                    sellerMarker.getElement()?.classList.remove('highlighted');
+                    if (sellerMarker.getElement()) {
+                        sellerMarker.getElement().classList.remove('highlighted');
+                    }
                 });
+            });
+            
+            // Add click functionality
+            marker.on('click', (e) => {
+                // Navigate to the city view
+                const event = new CustomEvent('cityClick', {
+                    detail: {
+                        city: storeCity,
+                        state: storeState
+                    }
+                });
+                document.dispatchEvent(event);
             });
             
             // Add tooltip
@@ -707,96 +723,12 @@ class MapManager {
         
         // Add legend
         this.addStoreSellerLegend(minGMV, maxGMV);
-        
-        // Add CSS for sellerMarkers
-        this.addCustomCSS();
-    }
-    
-    /**
-     * Add CSS for store/seller markers
-     */
-    addCustomCSS() {
-        if (document.getElementById('map-custom-styles')) {
-            return; // Styles already added
-        }
-        
-        const styleEl = document.createElement('style');
-        styleEl.id = 'map-custom-styles';
-        styleEl.textContent = `
-            .seller-cross {
-                position: relative;
-                width: 16px;
-                height: 16px;
-                transform: rotate(45deg);
-            }
-            
-            .seller-cross:before,
-            .seller-cross:after {
-                content: '';
-                position: absolute;
-                background-color: #34a853;
-            }
-            
-            .seller-cross:before {
-                width: 100%;
-                height: 4px;
-                top: 6px;
-                left: 0;
-            }
-            
-            .seller-cross:after {
-                width: 4px;
-                height: 100%;
-                top: 0;
-                left: 6px;
-            }
-            
-            .seller-marker.highlighted .seller-cross {
-                transform: rotate(45deg) scale(1.3);
-                box-shadow: 0 0 8px rgba(52, 168, 83, 0.8);
-            }
-            
-            .highlight-connection {
-                animation: pulse 1.5s infinite;
-            }
-            
-            @keyframes pulse {
-                0% { opacity: 0.9; }
-                50% { opacity: 0.5; }
-                100% { opacity: 0.9; }
-            }
-            
-            .custom-tooltip {
-                font-size: 12px;
-                padding: 6px 8px;
-                background-color: rgba(255, 255, 255, 0.95);
-                border-radius: 4px;
-                box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-                border: 1px solid #dadce0;
-            }
-            
-            .tooltip-title {
-                font-weight: bold;
-                margin-bottom: 4px;
-                color: #1a73e8;
-            }
-            
-            .tooltip-address {
-                font-style: italic;
-                margin-bottom: 4px;
-                color: #5f6368;
-            }
-            
-            .store-tooltip div,
-            .seller-tooltip div {
-                margin-bottom: 3px;
-            }
-        `;
-        document.head.appendChild(styleEl);
     }
     
     /**
      * Add legend for stores and sellers
+     * @param {number} minGMV - Minimum GMV value
+     * @param {number} maxGMV - Maximum GMV value
      */
     addStoreSellerLegend(minGMV, maxGMV) {
         const legend = L.control({ position: 'bottomright' });
@@ -839,6 +771,96 @@ class MapManager {
     }
     
     /**
+     * Render state-level map with cities data
+     * @param {string} stateName - The state name
+     * @param {Array} citiesData - GMV data by city
+     * @param {string} metricType - The metric to visualize
+     */
+    renderStateMap(stateName, citiesData = [], metricType = 'total_gmv') {
+        console.log(`Rendering state map for ${stateName} with ${citiesData.length} cities, metric: ${metricType}`);
+        
+        // Set current state
+        this.currentLevel = 'state';
+        this.currentState = stateName;
+        this.currentCity = null;
+        this.isNetworkView = false;
+        
+        // Clear previous layers
+        this.clearLayers();
+        
+        // First try to fetch individual stores and sellers
+        showLoading(`Loading stores and sellers for ${stateName}...`);
+        
+        fetch(`/api/state-stores/${encodeURIComponent(stateName)}`)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch stores: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(storesData => {
+                // Check for valid data
+                if (!storesData || !Array.isArray(storesData) || storesData.length === 0) {
+                    console.warn(`No store data available for ${stateName}`);
+                    hideLoading();
+                    
+                    // Fall back to city-based visualization if no individual stores
+                    if (citiesData && citiesData.length > 0) {
+                        this.renderStateMapWithCities(stateName, citiesData, metricType);
+                    }
+                    return;
+                }
+                
+                // Filter stores with valid coordinates
+                const validStores = storesData.filter(store => 
+                    store && 
+                    (store.LATITUDE !== undefined || store.latitude !== undefined) && 
+                    (store.LONGITUDE !== undefined || store.longitude !== undefined)
+                );
+                
+                if (validStores.length === 0) {
+                    console.warn(`No stores with valid coordinates for ${stateName}`);
+                    hideLoading();
+                    
+                    // Fall back to city-based visualization
+                    if (citiesData && citiesData.length > 0) {
+                        this.renderStateMapWithCities(stateName, citiesData, metricType);
+                    }
+                    return;
+                }
+                
+                // Fetch sellers data for this state
+                return fetch(`/api/state-sellers/${encodeURIComponent(stateName)}`)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`Failed to fetch sellers: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(sellersData => {
+                        // Render both stores and sellers
+                        this.renderStoresAndSellers(stateName, validStores, sellersData || []);
+                        hideLoading();
+                    })
+                    .catch(error => {
+                        console.error('Error fetching sellers:', error);
+                        // Still render stores even if sellers fetch fails
+                        this.renderStoresAndSellers(stateName, validStores, []);
+                        hideLoading();
+                    });
+            })
+            .catch(error => {
+                console.error('Error fetching stores:', error);
+                hideLoading();
+                
+                // Fall back to city-based visualization on error
+                if (citiesData && citiesData.length > 0) {
+                    this.renderStateMapWithCities(stateName, citiesData, metricType);
+                }
+            });
+    }
+    
+    /**
      * Fallback method to render state with cities
      * @param {string} stateName - The state name
      * @param {Array} citiesData - GMV data by city
@@ -852,6 +874,41 @@ class MapManager {
             console.warn(`No valid city data available for ${stateName}`);
             return;
         }
+        
+        // Set current state
+        this.currentLevel = 'state';
+        this.currentState = stateName;
+        this.currentCity = null;
+        this.isNetworkView = false;
+        
+        // Clear previous layers
+        this.clearLayers();
+        
+        // Find the state in the GeoJSON data
+        const stateFeature = this.geoData.features.find(f => 
+            f.properties.name && stateName && 
+            f.properties.name.toLowerCase() === stateName.toLowerCase()
+        );
+        
+        if (!stateFeature) {
+            console.error(`State not found in GeoJSON: ${stateName}`);
+            return;
+        }
+        
+        // Set map view to center on the state
+        const bounds = L.geoJSON(stateFeature).getBounds();
+        this.map.fitBounds(bounds);
+        
+        // Render the state boundary
+        this.dataLayer = L.geoJSON(stateFeature, {
+            style: {
+                weight: 2,
+                color: '#1a73e8',
+                fillColor: '#e4eff9',
+                fillOpacity: 0.2,
+                opacity: 1
+            }
+        }).addTo(this.map);
         
         // Check for valid coordinates
         const validCities = citiesData.filter(city => 
@@ -980,7 +1037,7 @@ class MapManager {
                 });
                 
                 // Add tooltip
-                let tooltipContent = `${city}<br>${metricName}: `;
+                let tooltipContent = `<div class="tooltip"><strong>${city}</strong><br>${metricName}: `;
                 
                 if (metricType === 'store_count') {
                     tooltipContent += formatNumber(metricValue);
@@ -988,10 +1045,12 @@ class MapManager {
                     tooltipContent += formatCurrency(metricValue);
                 }
                 
+                tooltipContent += `<br>Stores: ${formatNumber(storeCount)}</div>`;
+                
                 marker.bindTooltip(tooltipContent, {
                     permanent: false,
                     direction: 'top',
-                    className: 'city-tooltip'
+                    className: 'custom-tooltip'
                 });
                 
                 cityMarkers.addLayer(marker);
@@ -1001,16 +1060,64 @@ class MapManager {
         cityMarkers.addTo(this.map);
         this.dataLayer = cityMarkers;
         
-        // Dispatch event to update legend
-        const event = new CustomEvent('metricChanged', {
-            detail: {
-                metricType: metricType,
-                metricName: metricName,
-                minValue: minValue,
-                maxValue: maxValue
+        // Add legend
+        this.addCityLegend(metricName, minValue, maxValue, metricType);
+    }
+    
+    /**
+     * Add legend for city metrics
+     * @param {string} metricName - Name of the metric
+     * @param {number} minValue - Minimum value
+     * @param {number} maxValue - Maximum value
+     * @param {string} metricType - Type of metric ('total_gmv', 'store_count', 'avg_gmv_per_store')
+     */
+    addCityLegend(metricName, minValue, maxValue, metricType) {
+        const legend = L.control({ position: 'bottomright' });
+        
+        legend.onAdd = (map) => {
+            const div = L.DomUtil.create('div', 'info legend');
+            
+            // Format min and max values according to metric type
+            let minValueFormatted, maxValueFormatted;
+            
+            if (metricType === 'store_count') {
+                minValueFormatted = formatNumber(minValue);
+                maxValueFormatted = formatNumber(maxValue);
+            } else {
+                minValueFormatted = formatCurrency(minValue);
+                maxValueFormatted = formatCurrency(maxValue);
             }
-        });
-        document.dispatchEvent(event);
+            
+            div.innerHTML = `
+                <div style="background: white; padding: 10px; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.2);">
+                    <div style="margin-bottom: 8px; font-weight: bold; font-size: 13px;">${metricName} by City</div>
+                    
+                    <div style="display: flex; align-items: center; margin-bottom: 6px;">
+                        <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${getHeatmapColor(minValue, minValue, maxValue)}; margin-right: 5px;"></div>
+                        <div style="font-size: 12px;">${minValueFormatted}</div>
+                    </div>
+                    
+                    <div style="display: flex; align-items: center; margin-bottom: 6px;">
+                        <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${getHeatmapColor((minValue + maxValue) / 2, minValue, maxValue)}; margin-right: 5px;"></div>
+                        <div style="font-size: 12px;">${metricType === 'store_count' ? 
+                            formatNumber((minValue + maxValue) / 2) : 
+                            formatCurrency((minValue + maxValue) / 2)}</div>
+                    </div>
+                    
+                    <div style="display: flex; align-items: center;">
+                        <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${getHeatmapColor(maxValue, minValue, maxValue)}; margin-right: 5px;"></div>
+                        <div style="font-size: 12px;">${maxValueFormatted}</div>
+                    </div>
+                    
+                    <div style="margin-top: 8px; font-size: 11px; color: #5f6368;">
+                        Circle size indicates ${metricName.toLowerCase()}
+                    </div>
+                </div>
+            `;
+            return div;
+        };
+        
+        legend.addTo(this.map);
     }
     
     /**
@@ -1048,8 +1155,18 @@ class MapManager {
         
         if (validCoords.length === 0) {
             console.error('No valid coordinates for stores in this city');
-            // Create a fallback view
-            this.map.setView(this.mapOptions.nation.center, this.mapOptions.city.zoom);
+            // Create a fallback view centered on the state
+            const stateFeature = this.geoData.features.find(f => 
+                f.properties.name && stateName && 
+                f.properties.name.toLowerCase() === stateName.toLowerCase()
+            );
+            
+            if (stateFeature) {
+                const bounds = L.geoJSON(stateFeature).getBounds();
+                this.map.fitBounds(bounds);
+            } else {
+                this.map.setView(this.mapOptions.nation.center, this.mapOptions.city.zoom);
+            }
             return;
         }
         
@@ -1094,28 +1211,7 @@ class MapManager {
             const lifetimeGmv = formatCurrency(store.STORE_LIFETIME_GMV || 0);
             const lifetimeOrders = formatNumber(store.STORE_LIFETIME_ORDERS || 0);
             
-            // Popup content
-            const popupContent = `
-                <div class="store-popup">
-                    <div class="store-popup-header">${storeName}</div>
-                    <div class="store-popup-address">${storeAddress}, ${storeCity}, ${storeState}</div>
-                    <div class="store-popup-stat">
-                        <span class="store-popup-label">GMV (Last Month):</span>
-                        <span class="store-popup-value">${storeGmv}</span>
-                    </div>
-                    <div class="store-popup-stat">
-                        <span class="store-popup-label">Lifetime GMV:</span>
-                        <span class="store-popup-value">${lifetimeGmv}</span>
-                    </div>
-                    <div class="store-popup-stat">
-                        <span class="store-popup-label">Lifetime Orders:</span>
-                        <span class="store-popup-value">${lifetimeOrders}</span>
-                    </div>
-                </div>
-            `;
-            
-            marker.bindPopup(popupContent);
-            
+            // Add hover functionality
             marker.on('mouseover', (e) => {
                 // Highlight the marker
                 e.target.setStyle({
@@ -1138,11 +1234,76 @@ class MapManager {
                 });
             });
             
+            // Popup content
+            const popupContent = `
+                <div class="store-popup">
+                    <div class="store-popup-header">${storeName}</div>
+                    <div class="store-popup-address">${storeAddress}, ${storeCity}, ${storeState}</div>
+                    <div class="store-popup-stat">
+                        <span class="store-popup-label">GMV (Last Month):</span>
+                        <span class="store-popup-value">${storeGmv}</span>
+                    </div>
+                    <div class="store-popup-stat">
+                        <span class="store-popup-label">Lifetime GMV:</span>
+                        <span class="store-popup-value">${lifetimeGmv}</span>
+                    </div>
+                    <div class="store-popup-stat">
+                        <span class="store-popup-label">Lifetime Orders:</span>
+                        <span class="store-popup-value">${lifetimeOrders}</span>
+                    </div>
+                </div>
+            `;
+            
+            marker.bindPopup(popupContent);
+            
             storeMarkers.addLayer(marker);
         });
         
         storeMarkers.addTo(this.map);
         this.dataLayer = storeMarkers;
+        
+        // Add legend
+        this.addStoreLegend(minGMV, maxGMV);
+    }
+    
+    /**
+     * Add legend for store GMV
+     * @param {number} minGMV - Minimum GMV value
+     * @param {number} maxGMV - Maximum GMV value
+     */
+    addStoreLegend(minGMV, maxGMV) {
+        const legend = L.control({ position: 'bottomright' });
+        
+        legend.onAdd = (map) => {
+            const div = L.DomUtil.create('div', 'info legend');
+            div.innerHTML = `
+                <div style="background: white; padding: 10px; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.2);">
+                    <div style="margin-bottom: 8px; font-weight: bold; font-size: 13px;">Store GMV Legend</div>
+                    
+                    <div style="display: flex; align-items: center; margin-bottom: 6px;">
+                        <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${getHeatmapColor(minGMV, minGMV, maxGMV)}; margin-right: 5px;"></div>
+                        <div style="font-size: 12px;">${formatCurrency(minGMV)}</div>
+                    </div>
+                    
+                    <div style="display: flex; align-items: center; margin-bottom: 6px;">
+                        <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${getHeatmapColor((minGMV + maxGMV) / 2, minGMV, maxGMV)}; margin-right: 5px;"></div>
+                        <div style="font-size: 12px;">${formatCurrency((minGMV + maxGMV) / 2)}</div>
+                    </div>
+                    
+                    <div style="display: flex; align-items: center;">
+                        <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${getHeatmapColor(maxGMV, minGMV, maxGMV)}; margin-right: 5px;"></div>
+                        <div style="font-size: 12px;">${formatCurrency(maxGMV)}</div>
+                    </div>
+                    
+                    <div style="margin-top: 8px; font-size: 11px; color: #5f6368;">
+                        Circle size indicates GMV (Last Month)
+                    </div>
+                </div>
+            `;
+            return div;
+        };
+        
+        legend.addTo(this.map);
     }
     
     /**
@@ -1255,26 +1416,93 @@ class MapManager {
             if (!sellerMarkers[item.SELLER_ID]) {
                 const sellerName = item.SELLER_FULL_NAME || 'Seller #' + item.SELLER_ID;
                 
-                const sellerMarker = L.circleMarker([item.seller_lat, item.seller_lng], {
-                    radius: 6,
-                    fillColor: '#34a853',
-                    color: '#fff',
-                    weight: 2,
-                    opacity: 1,
-                    fillOpacity: 0.8
+                const sellerIcon = L.divIcon({
+                    html: `<div class="seller-cross"></div>`,
+                    className: 'seller-marker',
+                    iconSize: [20, 20]
                 });
                 
+                const sellerMarker = L.marker([item.seller_lat, item.seller_lng], {
+                    icon: sellerIcon
+                });
+                
+                // Add hover functionality
+                sellerMarker.on('mouseover', (e) => {
+                    // Highlight all connections to this seller
+                    const associatedStores = validCoords.filter(n => n.SELLER_ID === item.SELLER_ID);
+                    
+                    // Add highlighted connections
+                    associatedStores.forEach(connection => {
+                        const storeLat = connection.store_lat;
+                        const storeLng = connection.store_lng;
+                        
+                        // Create a highlighted connection line
+                        const highlightLine = L.polyline(
+                            [
+                                [item.seller_lat, item.seller_lng],
+                                [storeLat, storeLng]
+                            ],
+                            {
+                                color: '#fbbc04',
+                                weight: 4,
+                                opacity: 1,
+                                dashArray: '',
+                                className: 'highlight-connection'
+                            }
+                        );
+                        
+                        networkLayer.addLayer(highlightLine);
+                        
+                        // Highlight the associated store
+                        if (storeMarkers[connection.STORE_ID]) {
+                            storeMarkers[connection.STORE_ID].setStyle({
+                                fillOpacity: 1,
+                                weight: 3
+                            });
+                        }
+                    });
+                    
+                    // Dispatch seller hover event
+                    const event = new CustomEvent('sellerHover', {
+                        detail: { seller: item }
+                    });
+                    document.dispatchEvent(event);
+                });
+                
+                sellerMarker.on('mouseout', (e) => {
+                    // Remove highlighted connections
+                    networkLayer.eachLayer(layer => {
+                        if (layer._path && layer._path.classList.contains('highlight-connection')) {
+                            networkLayer.removeLayer(layer);
+                        }
+                    });
+                    
+                    // Reset store markers
+                    Object.values(storeMarkers).forEach(marker => {
+                        if (marker.setStyle) {
+                            marker.setStyle({
+                                fillOpacity: 0.8,
+                                weight: 2
+                            });
+                        }
+                    });
+                });
+                
+                // Add tooltip
                 sellerMarker.bindTooltip(`Seller: ${sellerName}`, {
                     permanent: false,
-                    direction: 'top'
+                    direction: 'top',
+                    className: 'custom-tooltip'
                 });
                 
                 // Add popup with seller details
                 sellerMarker.bindPopup(`
-                    <div class="store-popup">
-                        <div class="store-popup-header">${sellerName}</div>
-                        <div class="store-popup-address">Location: (${item.seller_lat.toFixed(4)}, ${item.seller_lng.toFixed(4)})</div>
-                        <div class="store-popup-note">This seller is connected to ${validCoords.filter(n => n.SELLER_ID === item.SELLER_ID).length} stores</div>
+                    <div class="seller-popup">
+                        <div class="seller-popup-header">${sellerName}</div>
+                        <div class="seller-popup-address">Location: (${item.seller_lat.toFixed(4)}, ${item.seller_lng.toFixed(4)})</div>
+                        <div class="seller-popup-note">
+                            Connected to ${validCoords.filter(n => n.SELLER_ID === item.SELLER_ID).length} stores
+                        </div>
                     </div>
                 `);
                 
@@ -1303,6 +1531,46 @@ class MapManager {
                     opacity: 1,
                     dashArray: ''
                 });
+                
+                // Highlight connected store and seller
+                if (storeMarkers[item.STORE_ID]) {
+                    storeMarkers[item.STORE_ID].setStyle({
+                        fillOpacity: 1,
+                        weight: 3
+                    });
+                }
+                
+                if (sellerMarkers[item.SELLER_ID] && sellerMarkers[item.SELLER_ID].getElement) {
+                    sellerMarkers[item.SELLER_ID].getElement().classList.add('highlighted');
+                }
+                
+                // Show connection info in a tooltip
+                const connectionGMV = item.connection_gmv || 0;
+                const connectionCount = item.connection_count || 0;
+                
+                const tooltipContent = `
+                    <div class="connection-tooltip">
+                        <div><strong>Store:</strong> ${item.STORE_LOCATION_NAME || 'Store #' + item.STORE_ID}</div>
+                        <div><strong>Seller:</strong> ${item.SELLER_FULL_NAME || 'Seller #' + item.SELLER_ID}</div>
+                        <div><strong>Orders:</strong> ${connectionCount}</div>
+                        <div><strong>GMV:</strong> ${formatCurrency(connectionGMV)}</div>
+                    </div>
+                `;
+                
+                const tooltip = L.tooltip({
+                    permanent: false,
+                    direction: 'top',
+                    className: 'custom-tooltip'
+                })
+                .setLatLng([
+                    (item.store_lat + item.seller_lat) / 2,
+                    (item.store_lng + item.seller_lng) / 2
+                ])
+                .setContent(tooltipContent)
+                .addTo(this.map);
+                
+                // Store the tooltip reference for removal
+                line.tooltip = tooltip;
             });
             
             line.on('mouseout', (e) => {
@@ -1311,6 +1579,24 @@ class MapManager {
                     opacity: 0.7,
                     dashArray: '5, 5'
                 });
+                
+                // Reset store and seller highlighting
+                if (storeMarkers[item.STORE_ID]) {
+                    storeMarkers[item.STORE_ID].setStyle({
+                        fillOpacity: 0.8,
+                        weight: 2
+                    });
+                }
+                
+                if (sellerMarkers[item.SELLER_ID] && sellerMarkers[item.SELLER_ID].getElement) {
+                    sellerMarkers[item.SELLER_ID].getElement().classList.remove('highlighted');
+                }
+                
+                // Remove the tooltip
+                if (line.tooltip) {
+                    this.map.removeLayer(line.tooltip);
+                    line.tooltip = null;
+                }
             });
             
             networkLayer.addLayer(line);
@@ -1326,15 +1612,15 @@ class MapManager {
                     <div style="margin-bottom: 5px; font-weight: bold;">Network Legend</div>
                     <div style="display: flex; align-items: center; margin-bottom: 5px;">
                         <div style="width: 12px; height: 12px; border-radius: 50%; background-color: #1a73e8; margin-right: 5px;"></div>
-                        <div>Stores</div>
+                        <div>Stores (${Object.keys(storeMarkers).length})</div>
                     </div>
                     <div style="display: flex; align-items: center; margin-bottom: 5px;">
                         <div style="width: 12px; height: 12px; border-radius: 50%; background-color: #34a853; margin-right: 5px;"></div>
-                        <div>Sellers</div>
+                        <div>Sellers (${Object.keys(sellerMarkers).length})</div>
                     </div>
                     <div style="display: flex; align-items: center;">
                         <div style="width: 20px; height: 2px; background-color: #fbbc04; margin-right: 5px; border-top: 1px dashed #fbbc04;"></div>
-                        <div>Connections</div>
+                        <div>Connections (${validCoords.length})</div>
                     </div>
                 </div>
             `;
@@ -1345,108 +1631,5 @@ class MapManager {
         
         networkLayer.addTo(this.map);
         this.networkLayer = networkLayer;
-    }
-    
-    /**
-     * Toggle network view
-     * @param {boolean} showNetwork - Whether to show network view
-     * @param {Array} networkData - Network data for current city
-     * @param {Array} storesData - Store data for current city (for toggling back)
-     */
-    toggleNetworkView(showNetwork, networkData = [], storesData = []) {
-        if (this.currentLevel !== 'city') {
-            console.error('Network view is only available at city level');
-            return;
-        }
-        
-        this.isNetworkView = showNetwork;
-        
-        if (showNetwork) {
-            this.renderNetworkView(this.currentCity, this.currentState, networkData);
-        } else {
-            this.renderCityMap(this.currentCity, this.currentState, storesData);
-        }
-    }
-    
-    /**
-     * Highlight a GeoJSON feature on hover
-     * @param {Event} e - Leaflet event
-     */
-    highlightFeature(e) {
-        const layer = e.target;
-        
-        layer.setStyle(this.styleOptions.highlight);
-        
-        if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
-            layer.bringToFront();
-        }
-    }
-    
-    /**
-     * Reset highlight on mouseout
-     * @param {Event} e - Leaflet event
-     */
-    resetHighlight(e) {
-        if (this.currentLevel === 'nation' && this.dataLayer) {
-            this.dataLayer.resetStyle(e.target);
-        } else if (this.currentLevel === 'state') {
-            // For state level, we need custom reset logic
-            const layer = e.target;
-            layer.setStyle(this.styleOptions.stateDefault);
-        }
-    }
-    
-    /**
-     * Clear all map layers
-     */
-    clearLayers() {
-        if (this.dataLayer) {
-            this.map.removeLayer(this.dataLayer);
-            this.dataLayer = null;
-        }
-        
-        if (this.networkLayer) {
-            this.map.removeLayer(this.networkLayer);
-            this.networkLayer = null;
-        }
-        
-        // Also remove any legends or controls that might have been added
-        if (this.map) {
-            const legendControls = document.querySelectorAll('.legend');
-            legendControls.forEach(control => {
-                if (control.parentNode) {
-                    control.parentNode.removeChild(control);
-                }
-            });
-        }
-    }
-    
-    /**
-     * Go back to previous map level
-     */
-    goBack() {
-        if (this.currentLevel === 'city') {
-            // Go back to state level
-            const event = new CustomEvent('goToState', {
-                detail: { state: this.currentState }
-            });
-            document.dispatchEvent(event);
-        } else if (this.currentLevel === 'state') {
-            // Go back to nation level
-            const event = new CustomEvent('goToNation');
-            document.dispatchEvent(event);
-        }
-    }
-    
-    /**
-     * Get current map state
-     */
-    getCurrentState() {
-        return {
-            level: this.currentLevel,
-            state: this.currentState,
-            city: this.currentCity,
-            isNetworkView: this.isNetworkView
-        };
     }
 }
