@@ -29,6 +29,32 @@ const __dirname = path.dirname(__filename);
 const DB_DIR = path.join(__dirname, 'db');
 const USERS_FILE = path.join(DB_DIR, 'users.json');
 
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error(`[Error] ${err.message}`);
+  console.error(err.stack);
+  res.status(500).json({ error: 'Internal server error', message: err.message });
+});
+
+// Add a request logger middleware
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+
+// Helper to get cached state data
+async function getCachedStateData() {
+  try {
+    const cacheFilePath = path.join(DATA_CACHE_DIR, 'states_gmv.json');
+    const cachedData = await fs.readFile(cacheFilePath, 'utf8');
+    return JSON.parse(cachedData);
+  } catch (error) {
+    console.error('Error reading cached state data:', error);
+    return null;
+  }
+}
+
 // Ensure database directory exists
 async function ensureDbDir() {
   try {
@@ -88,6 +114,11 @@ async function initializeUserDb() {
 
 let usersDb; // Will be initialized at startup
 
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
 // Middleware
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -102,12 +133,15 @@ app.use(session({
   cookie: { secure: process.env.NODE_ENV === 'production' }
 }));
 
+
 // Snowflake connection
 let snowflakeConnection = null;
 
 async function connectToSnowflake() {
   return new Promise((resolve, reject) => {
     try {
+      console.log('Initializing Snowflake connection...');
+      
       // Check if we have a private key path in the environment
       const privateKeyPath = process.env.SNOWFLAKE_PRIVATE_KEY_PATH;
       let connectionOptions = {
@@ -119,16 +153,30 @@ async function connectToSnowflake() {
         role: process.env.SNOWFLAKE_ROLE || 'USERADMIN'
       };
 
+      console.log('Connection configuration:', {
+        account: connectionOptions.account,
+        username: connectionOptions.username,
+        warehouse: connectionOptions.warehouse,
+        database: connectionOptions.database,
+        schema: connectionOptions.schema,
+        role: connectionOptions.role
+      });
+
       // Determine authentication method
       if (privateKeyPath) {
         // Key Pair Authentication
         console.log('Attempting Snowflake connection using key pair authentication');
+        console.log('Private key path:', privateKeyPath);
+        
         try {
           const privateKey = fs.readFileSync(privateKeyPath.replace('~', process.env.HOME), 'utf8');
           connectionOptions.authenticator = 'SNOWFLAKE_JWT';
           connectionOptions.privateKey = privateKey;
+          console.log('Successfully read private key');
         } catch (keyError) {
           console.error('Error reading private key:', keyError);
+          console.error('Full error details:', JSON.stringify(keyError, null, 2));
+          console.log('Falling back to password authentication');
           // Fall back to password auth if key fails
           connectionOptions.password = process.env.SNOWFLAKE_PASSWORD || 'Zjy.20010628nicole';
         }
@@ -139,20 +187,103 @@ async function connectToSnowflake() {
       }
 
       // Create connection
+      console.log('Creating Snowflake connection object...');
       const connection = snowflake.createConnection(connectionOptions);
+
+      // Add connection test method to the connection object
+      connection.testQuery = function() {
+        return new Promise((resolveTest, rejectTest) => {
+          console.log('Executing test query to verify connection...');
+          this.execute({
+            sqlText: 'SELECT current_version() as VERSION',
+            complete: function(err, stmt, rows) {
+              if (err) {
+                console.error('Test query failed:', err);
+                rejectTest(err);
+              } else {
+                console.log('Test query successful:', rows);
+                resolveTest(rows);
+              }
+            }
+          });
+        });
+      };
 
       // Try to connect
       connection.connect((err) => {
         if (err) {
           console.error('Failed to connect to Snowflake:', err);
+          console.error('Connection error details:', JSON.stringify(err, null, 2));
+          console.error('Connection options used:', {
+            account: connectionOptions.account,
+            username: connectionOptions.username,
+            warehouse: connectionOptions.warehouse,
+            database: connectionOptions.database,
+            schema: connectionOptions.schema,
+            role: connectionOptions.role,
+            // Omit password for security
+            auth_type: privateKeyPath ? 'key_pair' : 'password'
+          });
           reject(err);
         } else {
           console.log('Successfully connected to Snowflake!');
-          resolve(connection);
+          
+          // Perform a test query to verify the connection works fully
+          connection.testQuery()
+            .then(() => {
+              console.log('Connection fully verified with test query');
+              
+              // Add a method to execute queries with better logging
+              connection.executeWithLogging = function(query, binds = []) {
+                return new Promise((resolveQuery, rejectQuery) => {
+                  console.log('Executing query with logging:', query);
+                  console.log('Query parameters:', binds);
+                  
+                  this.execute({
+                    sqlText: query,
+                    binds: binds,
+                    complete: function(err, stmt, rows) {
+                      if (err) {
+                        console.error('Query execution failed:', err);
+                        console.error('Error details:', JSON.stringify(err, null, 2));
+                        console.error('Failed SQL:', query);
+                        console.error('Binds:', binds);
+                        rejectQuery(err);
+                      } else {
+                        console.log(`Query executed successfully, returned ${rows ? rows.length : 0} rows`);
+                        if (rows && rows.length > 0) {
+                          console.log('Sample row:', rows[0]);
+                        }
+                        resolveQuery(rows);
+                      }
+                    }
+                  });
+                });
+              };
+              
+              // Verify database objects exist
+              console.log('Verifying database objects...');
+              connection.executeWithLogging('SHOW TABLES IN ' + connectionOptions.database + '.' + connectionOptions.schema)
+                .then(tables => {
+                  console.log('Available tables:', tables);
+                  resolve(connection);
+                })
+                .catch(tablesErr => {
+                  console.warn('Could not retrieve tables, but connection seems valid:', tablesErr);
+                  // Still resolve the connection even if table check fails
+                  resolve(connection);
+                });
+            })
+            .catch(testErr => {
+              console.error('Test query failed but connection was established:', testErr);
+              // Still resolve the connection since it was established
+              resolve(connection);
+            });
         }
       });
     } catch (error) {
       console.error('Error creating Snowflake connection:', error);
+      console.error('Full error stack:', error.stack);
       reject(error);
     }
   });
@@ -367,12 +498,40 @@ app.get('/api/cities-gmv/:state', async (req, res) => {
 
 app.get('/api/state-stores/:state', async (req, res) => {
   try {
-    const { state } = req.params;
+    let { state } = req.params;
     
     if (!state) {
       return res.status(400).json({ error: 'State parameter is required' });
     }
     
+    // Convert full state name to two-letter code if needed
+    const stateCode = getStateCodeFromName(state);
+    if (stateCode) {
+      console.log(`Converted state name "${state}" to state code "${stateCode}"`);
+      state = stateCode; // Use the state code for the database query
+    } else {
+      console.log(`No conversion found for "${state}", using as is`);
+    }
+    const stateFormatsToTry = [
+      state,                      // Original format
+      stateCode,                  // Two-letter code (if converted)
+      state.toUpperCase(),        // Uppercase
+      state.toLowerCase(),        // Lowercase
+      getStateNameFromCode(state) // Full name (if state was a code)
+    ].filter(Boolean); // Remove null/undefined values
+    
+    console.log(`[State Stores API] Will try these formats:`, stateFormatsToTry);
+    // Check if we have an active Snowflake connection
+    if (!snowflakeConnection) {
+      console.error('No active Snowflake connection');
+      return res.status(503).json({ error: 'Database connection unavailable' });
+    }
+    
+    // Log the request
+    console.log(`Fetching stores for state: ${state}`);
+    const placeholders = stateFormatsToTry.map((_ , i) => `?`).join(' OR s.STORE_STATE = ');
+
+    // Enhanced query to join STORES with ORDERS to get more accurate metrics
     const query = `
       SELECT 
         s.STORE_ID,
@@ -416,6 +575,8 @@ app.get('/api/state-stores/:state', async (req, res) => {
         s.GMV_LAST_MONTH DESC
       LIMIT 200
     `;
+
+    console.log(`[State Stores API] Executing query with binds:`, stateFormatsToTry);
     
     snowflakeConnection.execute({
       sqlText: query,
@@ -423,15 +584,44 @@ app.get('/api/state-stores/:state', async (req, res) => {
       complete: function(err, stmt, rows) {
         if (err) {
           console.error('Failed to execute query:', err);
+          console.error('SQL Query:', query);
+          console.error('Parameters:', [state]);
           return res.status(500).json({ error: 'Database query failed: ' + err.message });
         }
         
         if (!rows || rows.length === 0) {
           console.warn(`No stores found for state ${state}`);
-          return res.status(404).json({ error: 'No stores found for this state' });
+          
+          // Try the alternate format (if we used code, try name; if we used name, try code)
+          const alternateState = stateCode ? getStateNameFromCode(stateCode) : getStateCodeFromName(state);
+          if (alternateState) {
+            console.log(`Trying alternate state format: ${alternateState}`);
+            
+            snowflakeConnection.execute({
+              sqlText: query,
+              binds: [alternateState],
+              complete: function(altErr, altStmt, altRows) {
+                if (altErr) {
+                  console.error('Failed to execute alternate query:', altErr);
+                  return res.status(404).json({ error: 'No stores found for this state' });
+                }
+                
+                if (!altRows || altRows.length === 0) {
+                  console.warn(`No stores found for alternate state ${alternateState}`);
+                  return res.status(404).json({ error: 'No stores found for this state' });
+                }
+                
+                console.log(`Found ${altRows.length} stores using alternate state format: ${alternateState}`);
+                return res.json(altRows);
+              }
+            });
+          } else {
+            return res.status(404).json({ error: 'No stores found for this state' });
+          }
+        } else {
+          console.log(`Found ${rows.length} stores for state ${state}`);
+          return res.json(rows);
         }
-        
-        return res.json(rows);
       }
     });
   } catch (error) {
@@ -439,6 +629,133 @@ app.get('/api/state-stores/:state', async (req, res) => {
     res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
   }
 });
+
+// Helper function to convert state name to state code
+function getStateCodeFromName(stateName) {
+  if (!stateName) return null;
+  
+  // Handle case where it's already a code
+  if (stateName.length === 2 && stateName === stateName.toUpperCase()) {
+    return stateName;
+  }
+  
+  const stateNameToCode = {
+    'alabama': 'AL',
+    'alaska': 'AK',
+    'arizona': 'AZ',
+    'arkansas': 'AR',
+    'california': 'CA',
+    'colorado': 'CO',
+    'connecticut': 'CT',
+    'delaware': 'DE',
+    'florida': 'FL',
+    'georgia': 'GA',
+    'hawaii': 'HI',
+    'idaho': 'ID',
+    'illinois': 'IL',
+    'indiana': 'IN',
+    'iowa': 'IA',
+    'kansas': 'KS',
+    'kentucky': 'KY',
+    'louisiana': 'LA',
+    'maine': 'ME',
+    'maryland': 'MD',
+    'massachusetts': 'MA',
+    'michigan': 'MI',
+    'minnesota': 'MN',
+    'mississippi': 'MS',
+    'missouri': 'MO',
+    'montana': 'MT',
+    'nebraska': 'NE',
+    'nevada': 'NV',
+    'new hampshire': 'NH',
+    'new jersey': 'NJ',
+    'new mexico': 'NM',
+    'new york': 'NY',
+    'north carolina': 'NC',
+    'north dakota': 'ND',
+    'ohio': 'OH',
+    'oklahoma': 'OK',
+    'oregon': 'OR',
+    'pennsylvania': 'PA',
+    'rhode island': 'RI',
+    'south carolina': 'SC', 
+    'south dakota': 'SD',
+    'tennessee': 'TN',
+    'texas': 'TX',
+    'utah': 'UT',
+    'vermont': 'VT',
+    'virginia': 'VA',
+    'washington': 'WA',
+    'west virginia': 'WV',
+    'wisconsin': 'WI',
+    'wyoming': 'WY',
+    'district of columbia': 'DC'
+  };
+  
+  return stateNameToCode[stateName.toLowerCase()];
+}
+
+// Helper function to convert state code to state name
+function getStateNameFromCode(stateCode) {
+  if (!stateCode) return null;
+  
+  const stateCodeToName = {
+    'AL': 'Alabama',
+    'AK': 'Alaska',
+    'AZ': 'Arizona',
+    'AR': 'Arkansas',
+    'CA': 'California',
+    'CO': 'Colorado',
+    'CT': 'Connecticut',
+    'DE': 'Delaware',
+    'FL': 'Florida',
+    'GA': 'Georgia',
+    'HI': 'Hawaii',
+    'ID': 'Idaho',
+    'IL': 'Illinois',
+    'IN': 'Indiana',
+    'IA': 'Iowa',
+    'KS': 'Kansas',
+    'KY': 'Kentucky',
+    'LA': 'Louisiana',
+    'ME': 'Maine',
+    'MD': 'Maryland',
+    'MA': 'Massachusetts',
+    'MI': 'Michigan',
+    'MN': 'Minnesota',
+    'MS': 'Mississippi',
+    'MO': 'Missouri',
+    'MT': 'Montana',
+    'NE': 'Nebraska',
+    'NV': 'Nevada',
+    'NH': 'New Hampshire',
+    'NJ': 'New Jersey',
+    'NM': 'New Mexico',
+    'NY': 'New York',
+    'NC': 'North Carolina',
+    'ND': 'North Dakota',
+    'OH': 'Ohio',
+    'OK': 'Oklahoma',
+    'OR': 'Oregon',
+    'PA': 'Pennsylvania',
+    'RI': 'Rhode Island',
+    'SC': 'South Carolina',
+    'SD': 'South Dakota',
+    'TN': 'Tennessee',
+    'TX': 'Texas',
+    'UT': 'Utah',
+    'VT': 'Vermont',
+    'VA': 'Virginia',
+    'WA': 'Washington',
+    'WV': 'West Virginia',
+    'WI': 'Wisconsin',
+    'WY': 'Wyoming',
+    'DC': 'District of Columbia'
+  };
+  
+  return stateCodeToName[stateCode.toUpperCase()];
+}
 
 
 // API route to fetch sellers for a specific state (for state-level map)
@@ -1356,6 +1673,18 @@ app.get('/api/cities-gmv/:state', async (req, res) => {
   }
 });
 
+app.use((req, res, next) => {
+  console.log(`[404] Route not found: ${req.method} ${req.url}`);
+  res.status(404).json({ error: `Route ${req.method} ${req.url} not found` });
+});
+
+// Global error handler (MUST be the last middleware)
+app.use((err, req, res, next) => {
+  console.error(`[Error] ${err.message}`);
+  console.error(err.stack);
+  res.status(500).json({ error: 'Internal server error', message: err.message });
+});
+
 // Start server
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
@@ -1410,90 +1739,6 @@ process.on('SIGINT', () => {
     console.log('Snowflake connection closed.');
     process.exit(err ? 1 : 0);
   });
-});
-
-// API route to fetch all stores for a specific state
-// API route to fetch all stores for a specific state with ORDERS data
-app.get('/api/state-stores/:state', async (req, res) => {
-  try {
-    const { state } = req.params;
-    
-    if (!state) {
-      return res.status(400).json({ error: 'State parameter is required' });
-    }
-    
-    // Check if we have an active Snowflake connection
-    if (!snowflakeConnection) {
-      console.error('No active Snowflake connection');
-      return res.status(503).json({ error: 'Database connection unavailable' });
-    }
-    
-    // Enhanced query to join STORES with ORDERS to get more accurate metrics
-    const query = `
-      SELECT 
-        s.STORE_ID,
-        s.SELLER_ID,
-        s.LATEST_SELLER_ID,
-        s.SELLER_FIRST_NAME,
-        s.SELLER_LAST_NAME,
-        s.STORE_LOCATION_NAME,
-        s.STORE_ADDRESS,
-        s.STORE_CITY,
-        s.STORE_STATE,
-        s.STORE_ZIP_CODE,
-        s.LATITUDE,
-        s.LONGITUDE,
-        s.STORE_LIFETIME_GMV,
-        s.STORE_LIFETIME_ORDERS,
-        s.GMV_LAST_MONTH,
-        s.GMV_CURRENT_MONTH,
-        s.ORDERS_LAST_MONTH,
-        -- Get additional metrics from ORDERS table
-        SUM(CASE WHEN MONTH(o.ORDER_CREATED_AT) = MONTH(CURRENT_DATE()) 
-                 AND YEAR(o.ORDER_CREATED_AT) = YEAR(CURRENT_DATE()) 
-            THEN o.ORDER_GMV ELSE 0 END) as ORDERS_MTD_GMV,
-        COUNT(CASE WHEN MONTH(o.ORDER_CREATED_AT) = MONTH(CURRENT_DATE()) 
-                   AND YEAR(o.ORDER_CREATED_AT) = YEAR(CURRENT_DATE()) 
-            THEN o.ORDER_ID ELSE NULL END) as ORDERS_MTD_COUNT
-      FROM 
-        STORES s
-      LEFT JOIN
-        ORDERS o ON s.STORE_ID = o.STORE_ID
-      WHERE 
-        s.STORE_STATE = ?
-        AND s.LATITUDE IS NOT NULL
-        AND s.LONGITUDE IS NOT NULL
-      GROUP BY
-        s.STORE_ID, s.SELLER_ID, s.LATEST_SELLER_ID, s.SELLER_FIRST_NAME, s.SELLER_LAST_NAME,
-        s.STORE_LOCATION_NAME, s.STORE_ADDRESS, s.STORE_CITY, s.STORE_STATE, s.STORE_ZIP_CODE,
-        s.LATITUDE, s.LONGITUDE, s.STORE_LIFETIME_GMV, s.STORE_LIFETIME_ORDERS,
-        s.GMV_LAST_MONTH, s.GMV_CURRENT_MONTH, s.ORDERS_LAST_MONTH
-      ORDER BY 
-        s.GMV_LAST_MONTH DESC
-      LIMIT 200
-    `;
-    
-    snowflakeConnection.execute({
-      sqlText: query,
-      binds: [state],
-      complete: function(err, stmt, rows) {
-        if (err) {
-          console.error('Failed to execute query:', err);
-          return res.status(500).json({ error: 'Database query failed: ' + err.message });
-        }
-        
-        if (!rows || rows.length === 0) {
-          console.warn(`No stores found for state ${state}`);
-          return res.status(404).json({ error: 'No stores found for this state' });
-        }
-        
-        return res.json(rows);
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching state stores:', error);
-    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
-  }
 });
 
 // API route to fetch all sellers in a specific state with ORDERS data
@@ -1574,7 +1819,6 @@ app.get('/api/state-sellers/:state', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching state sellers:', error);
-    res.status(500).json({ error: 'An unexpected error occurred: ' + error.message });
   }
 });
 
